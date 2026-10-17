@@ -1,55 +1,24 @@
 <?php
 header('Content-Type: application/json');
 
-$logFile = __DIR__ . '/abdm_init_test.log';
-
+/*
+ * DIAGNOSTICS NOW GO TO THE PHP ERROR LOG
+ *
+ * This previously appended to __DIR__ . '/abdm_init_test.log', a file that sits
+ * INSIDE THE WEB ROOT and is therefore downloadable over HTTP. It was not named
+ * in the .htaccess <FilesMatch> block that denies abdm_callback_debug.txt, so the
+ * protection that covers the other diagnostics did not cover it.
+ *
+ * error_log() keeps every diagnostic still emitted below while removing the
+ * file from the web root entirely. Newlines are folded to ' | ' so each event is
+ * one greppable line rather than a multi-line entry.
+ */
 function abdmInitLog($message)
 {
-    global $logFile;
-    file_put_contents(
-        $logFile,
-        "\n" . date('Y-m-d H:i:s') . "\n" . $message . "\n--------------------\n",
-        FILE_APPEND
-    );
+    error_log('[ABDM-INIT] ' . preg_replace('/\s*\R\s*/', ' | ', trim((string)$message)));
 }
 
 $rawBody = file_get_contents('php://input');
-
-/*
- * SAFE DIAGNOSTIC LOGGING  (M2 Phase 0 / 0.4)
- * -------------------------------------------
- * Previously every inbound header VALUE except AUTHORIZATION was written to
- * abdm_init_test.log, together with the full raw request body. That body carries
- * abhaAddress and patient identifiers, so this file accumulated secrets and
- * patient data in plain text.
- *
- * Only non-identifying diagnostics are retained now: event, method, a per-header
- * PRESENCE map (never values), body SIZE, and correlation-id presence. The log
- * file is kept - no history is deleted.
- */
-$incomingHeaders = function_exists('getallheaders') ? getallheaders() : [];
-$headerPresence = [];
-if (is_array($incomingHeaders)) {
-    foreach ($incomingHeaders as $key => $value) {
-        $key = strtolower((string)$key);
-        $isSensitive =
-            strpos($key, 'authorization') !== false ||
-            strpos($key, 'token') !== false ||
-            strpos($key, 'cookie') !== false ||
-            strpos($key, 'auth') !== false ||
-            $key === 'x-hiu-id' ||
-            $key === 'x-cm-id';
-        $headerPresence[$key] = $isSensitive ? '[REDACTED]' : '[present]';
-    }
-}
-abdmInitLog(
-    "EVENT: hip_link_care_context_init_received" .
-    "\nMETHOD: " . ($_SERVER['REQUEST_METHOD'] ?? '') .
-    "\nHEADERS: " . json_encode($headerPresence) .
-    "\nBODY_BYTES: " . (is_string($rawBody) ? strlen($rawBody) : 0) .
-    "\nREQUEST_ID_PRESENT: " . (!empty($_SERVER['HTTP_REQUEST_ID']) ? 'YES' : 'NO') .
-    "\nABHA_ADDRESS_PRESENT: " . (is_string($rawBody) && strpos($rawBody, 'abhaAddress') !== false ? 'YES' : 'NO')
-);
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     http_response_code(405);
@@ -441,67 +410,21 @@ $accessToken = $auth['access_token'];
 // ─────────────────────────────────────────────────────────
 // Build on-init payload
 // ─────────────────────────────────────────────────────────
-// ─────────────────────────────────────────────────────────────────────────────
-// REPLAY GUARD - prevent a duplicate SMS when ABDM retries the on-init callback
-// ─────────────────────────────────────────────────────────────────────────────
-// A previous attempt for this transaction already produced an OTP and, because
-// that attempt only reaches this point after a successful dispatch, already put
-// an SMS on the patient's phone. Generating and sending again would deliver a
-// second code, so a retry is acknowledged with the ORIGINAL link reference and
-// the ORIGINAL expiry, and nothing is regenerated, re-persisted or re-sent.
-//
-// This runs BEFORE the outbound on-init for a specific reason: that call carries
-// the link reference. Reusing an earlier reference while telling ABDM about a new
-// one would leave on-confirm unable to resolve the reference, so the guard must
-// short-circuit before the new reference is minted.
-//
-// An expired or attempt-exhausted row is deliberately NOT matched. A stale attempt
-// is a different case from a duplicate retry and must still be able to receive a
-// fresh code.
-$existingOtpStmt = $hospitalConn->prepare("
-    SELECT link_reference_number, expires_at
-    FROM abdm_user_linking_otps
-    WHERE transaction_id = ?
-      AND expires_at > NOW()
-      AND attempts < 5
-    ORDER BY id DESC
-    LIMIT 1
-");
-
-$existingOtpRow = null;
-
-if ($existingOtpStmt) {
-    $existingOtpStmt->bind_param('s', $transactionId);
-    $existingOtpStmt->execute();
-    $existingOtpRow = $existingOtpStmt->get_result()->fetch_assoc();
-    $existingOtpStmt->close();
-}
-
-if (!empty($existingOtpRow['link_reference_number'])) {
-    $replayLinkReference = (string)$existingOtpRow['link_reference_number'];
-
-    abdmInitLog(
-        "EVENT: hip_link_care_context_otp_replay_suppressed" .
-        "\nLINK_REF: {$replayLinkReference}" .
-        "\nSMS_SENT: NO"
-    );
-
-    $hospitalConn->close();
-
-    http_response_code(202);
-
-    echo json_encode([
-        'success'                => true,
-        'message'                => 'Link initialization processed successfully.',
-        'transactionId'          => $transactionId,
-        'linkReferenceNumber'    => $replayLinkReference,
-        'authenticationType'     => 'MEDIATE',
-        'communicationMedium'    => 'MOBILE',
-        'communicationHint'      => 'OTP',
-        'communicationExpiry'    => gmdate('Y-m-d\TH:i:s.v\Z', strtotime((string)$existingOtpRow['expires_at']))
-    ]);
-    exit;
-}
+/*
+ * OTP REPLAY GUARD REMOVED
+ *
+ * This block existed only to stop a retried on-init from sending a SECOND SMS
+ * with a different code, which would have invalidated the first. It queried
+ * abdm_user_linking_otps for an unexpired, attempt-budgeted row and echoed the
+ * ORIGINAL link reference back to the gateway.
+ *
+ * With the OTP flow retired there is no code to duplicate and no SMS to
+ * suppress, so the guard had nothing left to protect. Its table is dropped in
+ * the same change.
+ *
+ * The link reference is now minted fresh below, on every call, exactly as it
+ * already was for the non-retry path.
+ */
 
 $linkReferenceNumber  = abdmM2GenerateRequestId();
 $communicationExpiry  = gmdate('Y-m-d\TH:i:s.v\Z', time() + 600);
@@ -602,171 +525,39 @@ if ($httpCode < 200 || $httpCode >= 300) {
 }
 
 // ─────────────────────────────────────────────────────────
-// 🔑 GENERATE + SEND OTP
-// This is the NEW block that was missing.
-// ─────────────────────────────────────────────────────────
-$mobileStmt = $hospitalConn->prepare("
-    SELECT mobile, first_name
-    FROM patient_master
-    WHERE id = ?
-    LIMIT 1
-");
-
-$mobileStmt->bind_param('i', $patientId);
-$mobileStmt->execute();
-$patientRow = $mobileStmt->get_result()->fetch_assoc();
-$mobileStmt->close();
-
-$mobile = preg_replace('/\D+/', '', (string)($patientRow['mobile'] ?? ''));
-if (strlen($mobile) === 10) {
-    $mobile = '91' . $mobile;
-}
-
-if ($mobile === '') {
-    abdmInitLog("EVENT: hip_link_care_context_otp_send_skipped reason=NO_MOBILE");
-} else {
-    // Generate 6-digit OTP
-    $otp       = str_pad((string)random_int(0, 999999), 6, '0', STR_PAD_LEFT);
-    $otpHash   = password_hash($otp, PASSWORD_BCRYPT);
-    $otpExpiry = date('Y-m-d H:i:s', time() + 300); // 5 minutes
-
-// Save OTP hash
-       //
-       // B-05: this INSERT previously carried "ON DUPLICATE KEY UPDATE
-       // patient_id=..., otp_hash=..., expires_at=..., attempts=0". That branch
-       // was DEAD CODE. abdm_user_linking_otps carries exactly one unique key -
-       // UNIQUE KEY link_reference_number (link_reference_number), verified
-       // against the live schema - and $linkReferenceNumber is generated fresh
-       // for every request at init:451 by abdmM2GenerateRequestId(). The
-       // conflict column and the inserted value were therefore always
-       // different, so the UPDATE could never run.
-       //
-       // Removing it is also a safety improvement. Had the reference ever
-       // collided, the old clause would have silently overwritten ANOTHER
-       // transaction's row - changing its patient_id and resetting its attempts
-       // counter to 0, which weakens the replay allowance. A plain INSERT makes
-       // a collision a loud, reported failure instead: $otpStored stays false
-       // and the handler answers 500 below.
-       $otpStmt = $hospitalConn->prepare("
-           INSERT INTO abdm_user_linking_otps
-           (transaction_id, link_reference_number, patient_id, otp_hash, expires_at, attempts, created_at)
-           VALUES (?, ?, ?, ?, ?, 0, NOW())
-       ");
-
-    // M2 Phase 0 / 0.5 - the OTP row MUST exist, otherwise the confirm endpoint
-    // has nothing to verify against. Previously execute()'s result was discarded
-    // and the handler still answered 202, which silently manufactured an
-    // unverifiable confirmation. Now a failure is terminal and is reported
-    // honestly. The SQL reason is logged server-side only, never returned.
-    $otpStored = false;
-    if (!$otpStmt) {
-        abdmInitLog('OTP_PERSIST_FAILED: prepare failed');
-    } else {
-        $otpStmt->bind_param(
-            'ssiss',
-            $transactionId,
-            $linkReferenceNumber,
-            $patientId,
-            $otpHash,
-            $otpExpiry
-        );
-        /* A thrown mysqli_sql_exception is handled alongside the return value, so the
-           guard holds whether or not the host sets MYSQLI_REPORT_STRICT. */
-        $otpStored = false;
-        try {
-            $otpStored = (bool) $otpStmt->execute();
-        } catch (Throwable $e) {
-            abdmInitLog('OTP_PERSIST_FAILED: execute threw');
-            error_log('init: OTP insert threw | ' . $e->getMessage());
-        }
-        if (!$otpStored) {
-            abdmInitLog('OTP_PERSIST_FAILED: execute failed');
-        }
-        $otpStmt->close();
-    }
-
-    if (!$otpStored) {
-        if (isset($hospitalConn) && $hospitalConn instanceof mysqli) {
-            $hospitalConn->close();
-        }
-        http_response_code(500);
-        echo json_encode([
-            'success' => false,
-            'message' => 'Unable to complete the link request. Please retry.'
-        ]);
-        exit;
-    }
-
-    // ─────────────────────────────────────────────────────
-    // SEND SMS - real dispatch via the project's existing provider integration
-    // ─────────────────────────────────────────────────────
-    // M2 Phase 0 / 0.4 - the OTP, the mobile number and the patient id are never
-    // written to disk in plain text. The diagnostics below record only
-    // non-identifying facts: whether the template resolved, whether the provider
-    // accepted the dispatch, and the HTTP status. The plaintext OTP exists only in
-    // the $otp variable for the lifetime of this request.
-    require_once $_SERVER['DOCUMENT_ROOT'] . '/communication/sms/send_sms.php';
-
-    $smsTemplatePath = $_SERVER['DOCUMENT_ROOT']
-        . '/communication/sms/sms_templates/abdm_link_otp.php';
-
-    $smsDispatched = false;
-
-    if (!file_exists($smsTemplatePath)) {
-        abdmInitLog(
-            "EVENT: hip_link_care_context_otp_sms_failed" .
-            "\nREASON: TEMPLATE_MISSING" .
-            "\nSMS_SENT: NO"
-        );
-    } else {
-        $smsMessage = require $smsTemplatePath;
-        $smsDispatched = sendSMS($mobile, $smsMessage);
-        unset($smsMessage);
-
-        abdmInitLog(
-            "EVENT: hip_link_care_context_otp_sms_dispatch" .
-            "\nSMS_SENT: " . ($smsDispatched ? 'YES' : 'NO') .
-            "\nLINK_REF: {$linkReferenceNumber}"
-        );
-    }
-
-    if (!$smsDispatched) {
-        /*
-         * The OTP stored a moment ago can never reach the patient, so it is
-         * removed instead of being left to expire against someone who was never
-         * sent a code and has no way to know the link failed. Removing it is also
-         * what makes the retry story exact: the next attempt finds no stored OTP,
-         * mints a fresh reference and dispatches exactly one SMS - never two.
-         *
-         * The delete is best-effort. If it fails the row simply expires on its
-         * own; nothing unsafe is created either way, because the callback answers
-         * 500 and no care context is ever marked linked without a real on-confirm.
-         */
-        $deleteOtpStmt = $hospitalConn->prepare("
-            DELETE FROM abdm_user_linking_otps
-            WHERE link_reference_number = ?
-            LIMIT 1
-        ");
-
-        if ($deleteOtpStmt) {
-            $deleteOtpStmt->bind_param('s', $linkReferenceNumber);
-            $deleteOtpStmt->execute();
-            $deleteOtpStmt->close();
-        }
-
-        // Reason only - never the OTP, the mobile number or any provider secret.
-        error_log('init: OTP SMS dispatch failed; stored OTP removed for this link reference.');
-
-        $hospitalConn->close();
-
-        http_response_code(500);
-        echo json_encode([
-            'success' => false,
-            'message' => 'Unable to send the verification code. Please retry.'
-        ]);
-        exit;
-    }
-}
+// SMS OTP GENERATION AND DISPATCH REMOVED
+//
+// This block minted a 6-digit OTP, bcrypt-hashed it into
+// abdm_user_linking_otps, and dispatched it through this installation's SMS
+// provider (communication/sms/send_sms.php using the abdm_link_otp template).
+// It answered ABDM's on-init callback with authenticationType = MEDIATE and
+// communicationHint = OTP, which made the PATIENT transcribe a code that this
+// system had texted them.
+//
+// That leg is retired. Linking is now HIP-initiated over the v0.5 gateway
+// family: the patient authorises in the ABHA Sandbox app, the Consent Manager
+// issues the linking token, and it is captured by
+// api/v0.5/users/auth/on-confirm/index.php and spent on
+// /gateway/v0.5/links/link/add-contexts.
+//
+// Consequences of this removal:
+//   * No OTP is generated, stored, texted or verified anywhere in this codebase.
+//   * communication/sms/send_sms.php is UNTOUCHED. It still has three unrelated
+//     non-ABDM callers (settings/users/save_user.php, masters/doctor/
+//     save_doctor.php, masters/hospital/save.php) and removing it would break
+//     new-user, new-doctor and new-hospital notifications.
+//   * The abdm_user_linking_otps table is dropped by
+//     database_work/m2_cm_linking_token_migration.sql's sibling migration.
+//   * api/v3/hip/link/care-context/confirm/index.php still reads that table for
+//     OTP verification. That leg must be retired separately; until it is, a
+//     confirm callback will fail to find its row and return 404 rather than
+//     silently confirming anything.
+//
+// THIS ENDPOINT STILL ANSWERS 202 ON PURPOSE.
+// ABDM's HiECM gateway drives this callback and will call it regardless of what
+// this file does, so the gateway contract must remain satisfied: the on-init
+// call is still made, the transaction is still persisted, and 202 is still
+// returned. What has changed is that no code is sent.
 
 // ─────────────────────────────────────────────────────────
 // Save transaction state

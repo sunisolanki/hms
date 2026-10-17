@@ -109,6 +109,28 @@ RewriteRule ^api/callbacks/v3/hip/link/care-context/init/?$ /api/v3/hip/link/car
 RewriteRule ^api/callbacks/v3/hip/link/care-context/confirm/?$ /api/v3/hip/link/care-context/confirm/index.php [L]
 RewriteRule ^api/callbacks/v3/link/on_carecontext/?$ /api/v3/link/on_carecontext/index.php [L]
 
+# ------------------------------------------------------------------
+# ABDM M2 - Consent Manager linking authorisation callback (v0.5)
+#
+# The CM POSTs the linking token here after the patient authorises the
+# request that modules/abdm/m2_auth_link.php opened via
+# /gateway/v0.5/users/auth/init. This is the ONLY path by which a CM
+# linking token reaches this installation, and the token it stores is
+# what authorises /gateway/v0.5/links/link/add-contexts.
+#
+# This is a different API family from the v3 rules above: the gateway calls
+# the v0.5 user-authorisation endpoints without the /v3/hip/... path
+# prefix, so it gets its own three-format block rather than being folded
+# into the existing ones.
+#
+# All three formats point at the same file, matching the pattern used for
+# every other ABDM callback: the URL registered with the bridge portal can
+# then be any of them, and changing format is not a code change.
+# ------------------------------------------------------------------
+RewriteRule ^api/v0\.5/users/auth/on-confirm/?$ /api/v0.5/users/auth/on-confirm/index.php [L]
+RewriteRule ^v0\.5/users/auth/on-confirm/?$ /api/v0.5/users/auth/on-confirm/index.php [L]
+RewriteRule ^api/callbacks/v0\.5/users/auth/on-confirm/?$ /api/v0.5/users/auth/on-confirm/index.php [L]
+
 # ABDM M3 - HIU Consent Request Notify callback (Receives the signed consent artifact)
 RewriteRule ^api/v3/hiu/consent/request/on-notify/?$ /api/v3/hiu/consent/request/on-notify/index.php [L]
 

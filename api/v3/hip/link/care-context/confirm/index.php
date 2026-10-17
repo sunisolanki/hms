@@ -4,43 +4,29 @@ header('Content-Type: application/json');
 $rawBody = file_get_contents('php://input');
 
 /*
- * SAFE DIAGNOSTIC LOGGING
- * -----------------------
- * This handler previously wrote getallheaders() with NO redaction plus the full
- * raw request body to abdm_confirm_test.log. The raw body carries
- * confirmation.token, i.e. the user-initiated-linking OTP in plaintext.
+ * DIAGNOSTIC LOGGING MOVED TO THE PHP ERROR LOG
  *
- * Only non-identifying diagnostics are retained now: the event, the method, a
- * per-header presence map (never values), the body SIZE, and correlation-id
- * presence. The log file itself is kept - no history is deleted - but it will
- * no longer accumulate secrets or patient identifiers.
+ * This handler previously wrote getallheaders() with NO redaction plus the full
+ * raw request body to __DIR__ . '/abdm_confirm_test.log'. The raw body carries
+ * confirmation.token - the OTP - in plaintext.
+ *
+ * Two problems are resolved at once:
+ *
+ *   1. The file sits INSIDE THE WEB ROOT and was not named in the .htaccess
+ *      <FilesMatch> block that denies abdm_callback_debug.txt, so it was
+ *      downloadable over HTTP.
+ *   2. Header presence alone is not worth a web-served artefact now that the
+ *      OTP leg this endpoint existed to verify has been retired.
+ *
+ * What remains observable is a single line naming the event, the method, the
+ * body size, and whether a REQUEST-ID was present. No header values, no
+ * identifiers, no token.
  */
-$inboundHeaders = function_exists('getallheaders') ? getallheaders() : [];
-$headerPresence = [];
-if (is_array($inboundHeaders)) {
-    foreach ($inboundHeaders as $headerName => $headerValue) {
-        $headerName = strtolower((string)$headerName);
-        $isSensitive =
-            strpos($headerName, 'authorization') !== false ||
-            strpos($headerName, 'token') !== false ||
-            strpos($headerName, 'cookie') !== false ||
-            strpos($headerName, 'auth') !== false ||
-            $headerName === 'x-hiu-id' ||
-            $headerName === 'x-cm-id';
-        $headerPresence[$headerName] = $isSensitive ? '[REDACTED]' : '[present]';
-    }
-}
-
-file_put_contents(
-    __DIR__ . '/abdm_confirm_test.log',
-    date('Y-m-d H:i:s') .
-    "\nEVENT: hip_link_care_context_confirm_received" .
-    "\nMETHOD: " . ($_SERVER['REQUEST_METHOD'] ?? '') .
-    "\nHEADERS: " . json_encode($headerPresence) .
-    "\nBODY_BYTES: " . (is_string($rawBody) ? strlen($rawBody) : 0) .
-    "\nREQUEST_ID_PRESENT: " . (!empty($_SERVER['HTTP_REQUEST_ID']) ? 'YES' : 'NO') .
-    "\n--------------------\n",
-    FILE_APPEND
+error_log(
+    '[ABDM-CONFIRM] hip_link_care_context_confirm_received' .
+    ' | method=' . preg_replace('/[^A-Za-z]/', '', (string)($_SERVER['REQUEST_METHOD'] ?? '')) .
+    ' | body_bytes=' . (is_string($rawBody) ? strlen($rawBody) : 0) .
+    ' | request_id_present=' . (!empty($_SERVER['HTTP_REQUEST_ID']) ? 'YES' : 'NO')
 );
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
@@ -238,157 +224,60 @@ if ($configuredHiuId !== '') {
 }
 
 // ─────────────────────────────────────────────────────────
-// Verify OTP  (M2 Phase 0 / 0.1 - fail closed)
-// ─────────────────────────────────────────────────────────
-// PREVIOUSLY: the whole block sat inside `if ($verifyStmt)`, and the
-// "no OTP row" branch only wrote a log line and fell through. Either condition
-// therefore allowed processing to continue to status='Confirmed' and
-// link_status='Linked' with NO OTP ever verified. Both are now terminal.
-$verifyStmt = $conn->prepare("
-    SELECT id, otp_hash, expires_at, attempts
-    FROM abdm_user_linking_otps
-    WHERE link_reference_number = ?
-    LIMIT 1
-");
+// SMS OTP VERIFICATION LEG RETIRED
+//
+// This block used to load an OTP hash from abdm_user_linking_otps, compare the
+// token the gateway supplied with password_verify(), count failed attempts, and
+// consume the row. It was the entire remaining purpose of this endpoint.
+//
+// It is retired for two reasons:
+//
+//   1. The table is dropped. Under this installation's PHP the prepare() at the
+//      old line 247 would THROW mysqli_sql_exception against a missing table
+//      rather than return false, because mysqli_report defaults to
+//      MYSQLI_REPORT_ERROR|MYSQLI_REPORT_STRICT and display_errors is on. The
+//      `if (!$verifyStmt)` guard below that call is unreachable in that mode, so
+//      the endpoint would have emitted an uncaught fatal - printing absolute
+//      paths and SQL text to any caller who POSTed here. Returning before any
+//      statement is prepared removes that surface entirely.
+//
+//   2. There is no longer an OTP to verify. The patient authorises in the ABHA
+//      Sandbox app; the Consent Manager issues the linking token and delivers it
+//      to api/v0.5/users/auth/on-confirm/index.php. This endpoint's remaining
+//      job - verifying a code this installation no longer sends - cannot be
+//      performed.
+//
+// LINKING MOVED TO
+//   modules/abdm/m2_auth_link.php          opens the authorisation request
+//   api/v0.5/users/auth/on-confirm/        receives and stores the linking token
+//   modules/abdm/m2_add_contexts.php       spends it on add-contexts
+//
+// 410 GONE is deliberate and honest: this confirmation step no longer exists.
+// Answering 200 here would falsely tell the gateway a linking completed.
+//
+// FAILS CLOSED. No transaction is marked Confirmed and no care context is
+// marked Linked on this path, so nothing can be linked without a real
+// authorisation.
+//
+// RESTORING THIS REQUIRES A CODE CHANGE, not just recreating the table: the
+// verification logic below has been removed, not merely disabled.
+//
+// The gateway plumbing after this block - transaction lookup, care-context
+// persistence and the on-confirm call - is intentionally retained, unreachable,
+// so that reversing this decision is a matter of removing one block.
+error_log('[ABDM-CONFIRM] OTP confirmation leg retired; linking is handled via the v0.5 gateway flow.');
 
-if (!$verifyStmt) {
-    // Do not disclose SQL detail to the caller; detail stays server-side.
-    error_log('ABDM_CONFIRM | OTP lookup could not be prepared; refusing.');
-    http_response_code(500);
-    echo json_encode(['success' => false, 'message' => 'Unable to verify confirmation.']);
-    exit;
-}
-
-$verifyStmt->bind_param('s', $linkRefNumber);
-$verifyStmt->execute();
-$otpRow = $verifyStmt->get_result()->fetch_assoc();
-$verifyStmt->close();
-
-if (!$otpRow) {
-    // Previously: log-and-continue. Now: terminal.
-    error_log('ABDM_CONFIRM | OTP record not found for the supplied link reference; refusing.');
-    http_response_code(400);
-    echo json_encode([
-        'success' => false,
-        'message' => 'Invalid or expired link reference.'
-    ]);
-    exit;
-}
-
-file_put_contents(
-    __DIR__ . '/abdm_confirm_test.log',
-    date('Y-m-d H:i:s') .
-    "\nEVENT: hip_link_care_context_confirm_otp_record_found" .
-    "\nOTP_EXPIRES_PRESENT: " . (!empty($otpRow['expires_at']) ? 'YES' : 'NO') .
-    "\n--------------------\n",
-    FILE_APPEND
-);
-
-if (strtotime($otpRow['expires_at']) < time()) {
+if (isset($conn) && $conn instanceof mysqli) {
     $conn->close();
-    http_response_code(400);
-    echo json_encode(['success' => false, 'message' => 'OTP expired.']);
-    exit;
 }
 
-if ((int)$otpRow['attempts'] >= 5) {
-    $conn->close();
-    http_response_code(400);
-    echo json_encode(['success' => false, 'message' => 'Too many attempts.']);
-    exit;
-}
+http_response_code(410);
 
-if (!password_verify($token, $otpRow['otp_hash'])) {
-    /* The attempt counter is the only replay control on this endpoint. It was
-       written with a string-interpolated query whose result was discarded, so a
-       failed write silently left the counter unchanged and a caller could retry
-       indefinitely. Prepared statement, checked result, terminal on failure. */
-    $attemptStmt = $conn->prepare("
-        UPDATE abdm_user_linking_otps
-        SET attempts = attempts + 1
-        WHERE id = ?
-        LIMIT 1
-    ");
-
-    if (!$attemptStmt) {
-        $conn->close();
-        http_response_code(500);
-        echo json_encode(['success' => false, 'message' => 'Unable to record OTP attempt.']);
-        exit;
-    }
-
-    $attemptStmt->bind_param('i', (int)$otpRow['id']);
-    $attemptRecorded = false;
-
-    try {
-        $attemptRecorded = (bool)$attemptStmt->execute();
-    } catch (Throwable $e) {
-        error_log('confirm: OTP attempt update threw | ' . $e->getMessage());
-    }
-
-    $attemptStmt->close();
-
-    if (!$attemptRecorded) {
-        $conn->close();
-        http_response_code(500);
-        echo json_encode(['success' => false, 'message' => 'Unable to record OTP attempt.']);
-        exit;
-    }
-
-    $conn->close();
-    http_response_code(400);
-    echo json_encode(['success' => false, 'message' => 'Invalid OTP.']);
-    exit;
-}
-
-/* Consume the OTP. This is the single-use control: the row's expires_at is
-   moved to NOW(), so any later replay of the same link reference is refused by
-   the expiry test above. The write was previously unchecked, which meant a
-   failed consume still proceeded to 'Confirmed'. It is now terminal on
-   failure so an unconsumed token can never be reused. */
-$consumeStmt = $conn->prepare("
-    UPDATE abdm_user_linking_otps
-    SET expires_at = NOW()
-    WHERE id = ?
-      AND expires_at > NOW()
-    LIMIT 1
-");
-
-if (!$consumeStmt) {
-    $conn->close();
-    http_response_code(500);
-    echo json_encode(['success' => false, 'message' => 'Unable to consume OTP.']);
-    exit;
-}
-
-$consumeStmt->bind_param('i', (int)$otpRow['id']);
-$otpConsumed = false;
-
-try {
-    $otpConsumed = ($consumeStmt->execute() && $consumeStmt->affected_rows === 1);
-} catch (Throwable $e) {
-    error_log('confirm: OTP consume threw | ' . $e->getMessage());
-}
-
-$consumeStmt->close();
-
-if (!$otpConsumed) {
-    $conn->close();
-    http_response_code(400);
-    echo json_encode([
-        'success' => false,
-        'message' => 'Invalid or expired link reference.'
-    ]);
-    exit;
-}
-
-file_put_contents(
-    __DIR__ . '/abdm_confirm_test.log',
-    date('Y-m-d H:i:s') .
-    "\nEVENT: hip_link_care_context_confirm_otp_verified" .
-    "\n--------------------\n",
-    FILE_APPEND
-);
+echo json_encode([
+    'success' => false,
+    'message' => 'This confirmation endpoint has been retired. Care-context linking is performed through the ABDM v0.5 gateway flow.',
+]);
+exit;
 
 // ─────────────────────────────────────────────────────────
 // M2 P0 - source identity (ABDM settings + mandatory X-HIP-ID / X-HIU-ID)

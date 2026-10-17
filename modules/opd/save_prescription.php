@@ -6,6 +6,7 @@ require $_SERVER['DOCUMENT_ROOT'].'/includes/db.php';
 require $_SERVER['DOCUMENT_ROOT'].'/includes/prescription_setup_helper.php';
 require_once $_SERVER['DOCUMENT_ROOT'].'/includes/abdm_helper.php';
 require_once $_SERVER['DOCUMENT_ROOT'].'/modules/abdm/m2_care_context.php';
+require_once $_SERVER['DOCUMENT_ROOT'].'/modules/abdm/m2_add_contexts.php';
 if(!isset($_SESSION['user_id'])){
     header("Location:/login.php");
     exit;
@@ -879,6 +880,32 @@ ABDM M2 - PRESCRIPTION CARE CONTEXT
  * Skipping this block is safe: it runs after the prescription has already been
  * persisted, performs no billing or validation work, and writes nothing that
  * ordinary HMS behaviour depends on. Prescription saving continues normally.
+ *
+ * WHICH MECHANISM IS USED, AND WHY IT CHANGED
+ * -------------------------------------------
+ * This block previously called abdmM2LinkCareContext(), which posts to the v3
+ * HiECM endpoint /hiecm/hip/v3/link/carecontext and carries a linking token
+ * obtained from /hiecm/hip/v3/token/generate-token.
+ *
+ * It now calls abdmM2AddCareContexts(), which posts to the v0.5 gateway endpoint
+ * /gateway/v0.5/links/link/add-contexts and carries the Consent Manager linking
+ * token that the patient authorises in the ABHA app and that arrives at
+ * api/v0.5/users/auth/on-confirm/index.php.
+ *
+ * Two reasons for the pivot:
+ *
+ *   1. The v0.5 path is the current documented HIP-initiated linking API and is
+ *      the one the Consent Manager recognises for /gateway/v0.5/links/link/*.
+ *   2. The v0.5 path removes this installation's SMS OTP dependency entirely,
+ *      which was the goal. The patient still authenticates, but that now happens
+ *      in the ABHA Sandbox app rather than against this system's own messaging.
+ *
+ * NOTE FOR DIAGNOSIS: every PRESCRIPTION-* care context recorded before this
+ * change carries link_status = 'Failed', while OPCONSULTATION contexts linked
+ * successfully. That discrepancy is unresolved and is NOT fixed by this change.
+ * The new path is gated on a CM linking token and deliberately has no fallback
+ * to the old one, so a patient with no token produces a skip rather than an
+ * attempt.
  */
 if(abdmOutboundAllowed($conn) && $prescription_id > 0 && $patient_id > 0){
 
@@ -918,7 +945,7 @@ if(abdmOutboundAllowed($conn) && $prescription_id > 0 && $patient_id > 0){
      */
     if($m2Status !== 'Linked'){
 
-        $m2CareContextResult = abdmM2LinkCareContext(
+        $m2CareContextResult = abdmM2AddCareContexts(
             $patient_id,
             $careContextReference,
             $careContextDisplay,
@@ -927,14 +954,35 @@ if(abdmOutboundAllowed($conn) && $prescription_id > 0 && $patient_id > 0){
 
         if(empty($m2CareContextResult['success'])){
 
-    error_log(
-        'ABDM M2 Prescription Care Context failed: ' .
-        json_encode(
-            $m2CareContextResult,
-            JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
-        )
-    );
-}
+            /*
+             * A SKIP IS NOT A FAILURE.
+             *
+             * 'no_cm_linking_token' means the patient has not authorised linking
+             * yet, which is an expected state rather than a fault. It is logged at
+             * a distinct level so the two are distinguishable when counting
+             * linking coverage.
+             *
+             * THE RESULT ARRAY IS DELIBERATELY NOT SERIALISED.
+             *
+             * This used to log json_encode($m2CareContextResult), which includes
+             * the gateway response. The v0.5 gateway can echo the linking token
+             * back in that body, so serialising the whole result would write a
+             * live bearer credential into the error log on every failure. Only
+             * fixed labels are recorded now.
+             */
+            $isSkip = !empty($m2CareContextResult['skipped']);
+
+            error_log(
+                'ABDM M2 Prescription Care Context ' . ($isSkip ? 'skipped' : 'failed') .
+                ' | reason=' . preg_replace(
+                    '/[^A-Za-z0-9_.\-]/',
+                    '',
+                    (string)($m2CareContextResult['skip_reason'] ?? 'unknown')
+                ) .
+                ' | http_code=' . (int)($m2CareContextResult['http_code'] ?? 0) .
+                ' | care_context=' . $careContextReference
+            );
+        }
     }
 }
 /* ===============================
