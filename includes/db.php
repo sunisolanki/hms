@@ -19,12 +19,7 @@ $controlHost = $controlCredentials['host'];
 $controlDb   = $controlCredentials['db'];
 $controlUser = $controlCredentials['user'];
 $controlPass = $controlCredentials['pass'];
-$controlConn = new mysqli(
-    $controlHost,
-    $controlUser,
-    $controlPass,
-    $controlDb
-);
+$controlConn = hmsConnectMysqli($controlCredentials);
 if ($controlConn->connect_error) {
     die("Control database connection failed.");
 }

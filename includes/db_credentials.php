@@ -30,9 +30,36 @@ declare(strict_types=1);
  * deliberately NOT used, because XAMPP's default variables_order=GPCS omits
  * "E" and therefore leaves $_ENV empty.
  *
+ * Managed hosting (Render / Aiven)
+ * -------------------------------
+ * When HMS_ENV is unset (the normal production case) and DATABASE_URL is
+ * present in the environment, the control-database credentials are taken from
+ * that URL instead of the production literals. DATABASE_URL is supplied by
+ * Render's Aiven integration and carries host, user, password, database name
+ * and port. If DATABASE_URL is absent the production literals are returned
+ * unchanged, so XAMPP-style local installs behave exactly as before.
+ *
+ * Precedence is HMS_ENV=local > DATABASE_URL > production literals.
+ *
+ * Why this file parses DATABASE_URL instead of each caller doing it
+ * ------------------------------------------------------------------
+ * Two reasons, both of which caused real production outages:
+ *
+ *   1. parse_url() is not safe for real database passwords. Aiven routinely
+ *      generates passwords containing reserved characters. parse_url() returns
+ *      false outright when the password contains "/" or "#", and it does not
+ *      percent-decode, so "P%40ssw0rd" arrives verbatim as the password.
+ *
+ *   2. Aiven does not listen on 3306. Every call site in this application
+ *      calls new mysqli($host, $user, $pass, $db) with four arguments, which
+ *      silently defaults to port 3306. Overriding only host/user/pass/db
+ *      therefore still fails to connect, just with a different error.
+ *      hmsConnectMysqli() threads the port through.
+ *
  * Deployability
  * -------------
- * This file is safe to deploy to production: it is inert unless HMS_ENV=local.
+ * This file is safe to deploy to production: it is inert unless HMS_ENV=local
+ * or DATABASE_URL is set.
  */
 
 /**
@@ -190,21 +217,279 @@ function hmsLocalConfig(): array
 }
 
 /**
+ * Terminate the request safely when DATABASE_URL is set but unusable.
+ * Credential values are never written to the log or to the response body.
+ */
+function hmsDatabaseUrlFail(string $reason): void
+{
+    error_log('HMS database URL configuration error: ' . $reason);
+
+    if (!headers_sent()) {
+        http_response_code(500);
+        header('Content-Type: text/plain; charset=utf-8');
+    }
+
+    exit(
+        "Database configuration is unavailable. The request was stopped before "
+        . "any database connection was attempted.\n"
+    );
+}
+
+/**
+ * Parse a DATABASE_URL into connection parameters.
+ *
+ * Deliberately does not use parse_url(). See the file header for why.
+ *
+ * @return array{host:string,db:string,user:string,pass:string,port:int}
+ */
+function hmsDatabaseUrl(string $url): array
+{
+    $url = trim($url);
+
+    if (preg_match('#^([a-zA-Z][a-zA-Z0-9+.\-]*)://#', $url, $schemeMatch) === 1) {
+        if (!in_array(strtolower($schemeMatch[1]), ['mysql', 'mysql2', 'mysqli'], true)) {
+            hmsDatabaseUrlFail('Unsupported URL scheme: ' . $schemeMatch[1] . '.');
+        }
+
+        $url = substr($url, strlen($schemeMatch[0]));
+    }
+
+    // The userinfo is delimited by the LAST '@'. Splitting on the first one
+    // corrupts any password containing '@', which Aiven does generate.
+    $atPosition = strrpos($url, '@');
+
+    if ($atPosition === false) {
+        hmsDatabaseUrlFail('The URL has no credentials section.');
+    }
+
+    $userInfo = substr($url, 0, $atPosition);
+    $hostAndPath = substr($url, $atPosition + 1);
+
+    // User and password are separated by the FIRST ':'; the password itself
+    // may contain further colons.
+    $colonPosition = strpos($userInfo, ':');
+
+    if ($colonPosition === false) {
+        $user = $userInfo;
+        $pass = '';
+    } else {
+        $user = substr($userInfo, 0, $colonPosition);
+        $pass = substr($userInfo, $colonPosition + 1);
+    }
+
+    // Percent-decoding is required. Render stores the URL verbatim, so a
+    // password containing '@' or '/' arrives as '%40' or '%2F'.
+    $user = rawurldecode($user);
+    $pass = rawurldecode($pass);
+
+    // Split host[:port] from the database path at the FIRST '/' following the
+    // authority. Any '/' inside the password was already consumed above.
+    $slashPosition = strpos($hostAndPath, '/');
+
+    if ($slashPosition === false) {
+        $hostPort = $hostAndPath;
+        $database = '';
+    } else {
+        $hostPort = substr($hostAndPath, 0, $slashPosition);
+        $database = substr($hostAndPath, $slashPosition + 1);
+    }
+
+    // Discard any query string or fragment, e.g. "?ssl-mode=REQUIRED".
+    $database = preg_split('/[?#]/', $database, 2)[0];
+    $database = rawurldecode(ltrim($database, '/'));
+
+    $host = '';
+    $port = null;
+
+    if ($hostPort !== '' && $hostPort[0] === '[') {
+        // Bracketed IPv6 literal, e.g. [::1]:3306
+        $closePosition = strpos($hostPort, ']');
+
+        if ($closePosition === false) {
+            hmsDatabaseUrlFail('Malformed IPv6 host in the URL.');
+        }
+
+        $host = substr($hostPort, 1, $closePosition - 1);
+        $remainder = substr($hostPort, $closePosition + 1);
+
+        if ($remainder !== '' && $remainder[0] === ':') {
+            $port = substr($remainder, 1);
+        }
+    } else {
+        $lastColon = strrpos($hostPort, ':');
+
+        if ($lastColon !== false) {
+            $candidate = substr($hostPort, $lastColon + 1);
+
+            if ($candidate !== '' && ctype_digit($candidate)) {
+                $host = substr($hostPort, 0, $lastColon);
+                $port = $candidate;
+            } else {
+                $host = $hostPort;
+            }
+        } else {
+            $host = $hostPort;
+        }
+    }
+
+    $host = rawurldecode($host);
+
+    if ($host === '') {
+        hmsDatabaseUrlFail('The URL has no host.');
+    }
+
+    if ($user === '') {
+        hmsDatabaseUrlFail('The URL has no user.');
+    }
+
+    if ($database === '') {
+        hmsDatabaseUrlFail('The URL has no database name.');
+    }
+
+    if ($port !== null) {
+        $port = (int) $port;
+
+        if ($port < 1 || $port > 65535) {
+            hmsDatabaseUrlFail('The URL port is out of range.');
+        }
+    } else {
+        $port = 3306;
+    }
+
+    return [
+        'host' => $host,
+        'db'   => $database,
+        'user' => $user,
+        'pass' => $pass,
+        'port' => $port,
+    ];
+}
+
+/**
+ * Read DATABASE_URL from the environment, or null when it is not configured.
+ *
+ * $_SERVER is read first for the same reason hmsEnvMarker() does: under CGI and
+ * FastCGI SAPIs PHP populates $_SERVER from the process environment, whereas
+ * XAMPP's default variables_order omits "E" and leaves $_ENV empty. getenv() is
+ * the CLI fallback.
+ *
+ * @return array{host:string,db:string,user:string,pass:string,port:int}|null
+ */
+function hmsDatabaseUrlFromEnv(): ?array
+{
+    $url = $_SERVER['DATABASE_URL'] ?? null;
+
+    if (!is_string($url) || trim($url) === '') {
+        $url = getenv('DATABASE_URL');
+    }
+
+    if (!is_string($url) || trim($url) === '') {
+        return null;
+    }
+
+    return hmsDatabaseUrl($url);
+}
+
+/**
+ * Client flags for a managed MySQL connection.
+ *
+ * Aiven terminates TLS and expects it by default. Verification uses the system
+ * trust store, which Aiven's public certificate chain satisfies. Set HMS_DB_SSL=0
+ * to disable if a provider turns out not to offer TLS.
+ */
+function hmsMysqliFlags(): int
+{
+    $disabled = $_SERVER['HMS_DB_SSL'] ?? getenv('HMS_DB_SSL');
+
+    if (is_string($disabled) && trim($disabled) === '0') {
+        return 0;
+    }
+
+    return defined('MYSQLI_CLIENT_SSL') ? MYSQLI_CLIENT_SSL : 0;
+}
+
+/**
+ * Open a mysqli connection from a resolved credential array.
+ *
+ * Three behaviours matter here:
+ *
+ *   - The port comes from the credential array when present. Aiven does not
+ *     listen on 3306, and the historical four-argument new mysqli() call
+ *     silently forced 3306, so a correct host with a dropped port still fails.
+ *
+ *   - The connection is made with mysqli_init() + real_connect() rather than
+ *     the constructor, because mysqli::__construct() has no $flags parameter.
+ *     The TLS flags managed hosts expect can only be supplied to
+ *     real_connect(), which takes them as its seventh argument.
+ *
+ *   - The mysqli_sql_exception is caught rather than allowed to propagate.
+ *     PHP 8.1+ defaults to MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT, so
+ *     without this every "if ($conn->connect_error)" handler in this
+ *     application is unreachable dead code and the caller receives an
+ *     unhandled exception instead. index.php runs with display_errors on,
+ *     which would also leak the hostname into the response. $conn keeps its
+ *     connect_errno and connect_error values, so the existing error handling
+ *     works exactly as written.
+ *
+ * @param array<string,mixed> $credentials
+ */
+function hmsConnectMysqli(array $credentials): mysqli
+{
+    $conn = mysqli_init();
+
+    if ($conn === false) {
+        throw new RuntimeException('Unable to allocate a MySQL connection.');
+    }
+
+    try {
+        // The @ suppresses the diagnostic warning, which would otherwise be
+        // printed verbatim wherever display_errors is on and would expose the
+        // hostname. The same information is already available to the caller on
+        // $conn->connect_error, and the exception is caught immediately below.
+        @$conn->real_connect(
+            (string) ($credentials['host'] ?? 'localhost'),
+            (string) ($credentials['user'] ?? ''),
+            (string) ($credentials['pass'] ?? ''),
+            (string) ($credentials['db'] ?? ''),
+            (int) ($credentials['port'] ?? 3306),
+            null,
+            hmsMysqliFlags()
+        );
+    } catch (mysqli_sql_exception $e) {
+        // Intentionally swallowed; see the docblock. Connection details are
+        // left on $conn->connect_error for the caller to handle.
+    }
+
+    return $conn;
+}
+
+/**
  * Resolve control-database credentials.
  *
- * In production this returns the caller-supplied production values byte for
- * byte. In local mode it returns the external local values and never touches
- * the production ones.
+ * Resolution order:
+ *   1. HMS_ENV=local        -> external local configuration file.
+ *   2. DATABASE_URL present -> the managed Aiven connection.
+ *   3. otherwise            -> the caller-supplied production values, byte for
+ *                              byte, which is the original behaviour.
  *
- * host/db may legitimately match between local and production, so the
- * production-reuse guard only inspects user and pass.
+ * When DATABASE_URL supplies the credentials the returned array also carries a
+ * 'port' key, consumed by hmsConnectMysqli().
+ *
+ * host/db may legitimately match between modes, so the local production-reuse
+ * guard only inspects user and pass.
  *
  * @param  array{host:string,db:string,user:string,pass:string} $production
- * @return array{host:string,db:string,user:string,pass:string}
+ * @return array{host:string,db:string,user:string,pass:string,port?:int}
  */
 function hmsControlCredentials(array $production): array
 {
     if (!hmsIsLocalMode()) {
+        $fromUrl = hmsDatabaseUrlFromEnv();
+
+        if ($fromUrl !== null) {
+            return $fromUrl;
+        }
+
         return $production;
     }
 

@@ -21,12 +21,7 @@ $controlUser = $controlCredentials['user'];
 $controlPass = $controlCredentials['pass'];
 
 /* Create Control Database Connection */
-$controlConn = new mysqli(
-    $controlHost,
-    $controlUser,
-    $controlPass,
-    $controlDb
-);
+$controlConn = hmsConnectMysqli($controlCredentials);
 
 /* Check Connection */
 if ($controlConn->connect_error) {

@@ -11,17 +11,22 @@ function checkTenantAccess(): array
 
     $tenantId = $_SESSION['tenant_id'];
 
-    $controlHost = "localhost";
-    $controlDb = "u336643111_control";
-    $controlUser = "u336643111_control";
-    $controlPass = "Rohtha@751";
+    /*
+     * Credentials are resolved through the shared resolver. This function
+     * previously carried its own copy of the production literals, so it ignored
+     * both HMS_ENV=local and DATABASE_URL and could never reach the managed
+     * control database.
+     */
+    require_once __DIR__ . '/db_credentials.php';
 
-    $controlConn = new mysqli(
-        $controlHost,
-        $controlUser,
-        $controlPass,
-        $controlDb
-    );
+    $controlCredentials = hmsControlCredentials([
+        'host' => "localhost",
+        'db'   => "u336643111_control",
+        'user' => "u336643111_control",
+        'pass' => "Rohtha@751"
+    ]);
+
+    $controlConn = hmsConnectMysqli($controlCredentials);
 
     if ($controlConn->connect_error) {
         return [

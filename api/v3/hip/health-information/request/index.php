@@ -382,12 +382,19 @@ if (!is_array($controlConfig)) {
     ], 500);
 }
 
-$controlConn = new mysqli(
-    $controlConfig['host'],
-    $controlConfig['user'],
-    $controlConfig['pass'],
-    $controlConfig['name']
-);
+// This endpoint previously connected straight from control_db.php, bypassing
+// the shared resolver entirely. That made it fail on managed hosting, where
+// the control database lives behind DATABASE_URL (and a non-3306 port).
+require_once $_SERVER['DOCUMENT_ROOT'] . '/includes/db_credentials.php';
+
+$controlCredentials = hmsControlCredentials([
+    'host' => $controlConfig['host'],
+    'db'   => $controlConfig['name'],
+    'user' => $controlConfig['user'],
+    'pass' => $controlConfig['pass'],
+]);
+
+$controlConn = hmsConnectMysqli($controlCredentials);
 
 if ($controlConn->connect_error) {
     responseJson([

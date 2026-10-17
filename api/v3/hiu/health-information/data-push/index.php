@@ -79,12 +79,10 @@ $controlCredentials = hmsControlCredentials([
     'pass' => $controlConfig['pass'],
 ]);
 
-$controlConn = new mysqli(
-    $controlCredentials['host'],
-    $controlCredentials['user'],
-    $controlCredentials['pass'],
-    $controlCredentials['db']
-);
+// hmsConnectMysqli() threads through the port from DATABASE_URL (Aiven does
+// not listen on 3306) and suppresses the PHP 8.1+ mysqli exception so the
+// connect_error handler below still runs.
+$controlConn = hmsConnectMysqli($controlCredentials);
 
 if ($controlConn->connect_error) {
     responseJson([
