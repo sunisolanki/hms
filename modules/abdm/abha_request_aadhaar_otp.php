@@ -95,8 +95,24 @@ $tokenResult = abdmGetAccessToken();
 if (!$tokenResult['success']) {
     // Never echo the raw token result: on failure it carries the gateway's raw
     // error body, and on an unexpected shape it could carry a token.
-    // Log the transport status only - no body, no token, no identifier.
-    error_log('ABDM M1 AUTH FAILED | http_code=' . (int)($tokenResult['http_code'] ?? 0));
+    // Log the transport status and the reason only - no body, no token, no
+    // identifier.
+    //
+    // 'reason' is the field that identifies the failure. Four of the six
+    // branches in abdmGetAccessToken() report http_code = 0, so logging the
+    // status alone collapses a missing settings row, a blank credential, a cURL
+    // transport error and a gateway rejection into one indistinguishable line.
+    // Safe to log: auth.php builds 'error' from its own literals and the
+    // gateway's error code, never from a token.
+    error_log(
+        'ABDM M1 AUTH FAILED'
+        . ' | http_code=' . (int)($tokenResult['http_code'] ?? 0)
+        . ' | reason=' . substr(
+            (string)($tokenResult['error'] ?? $tokenResult['message'] ?? 'unknown'),
+            0,
+            300
+        )
+    );
     echo json_encode([
         'success' => false,
         'message' => 'Unable to authorise with ABDM. Please try again.'
@@ -121,6 +137,13 @@ $certificateResult = abdmRequest(
 );
 
 if ($certificateResult['curl_error']) {
+    error_log(
+        '[ABDM-M1] certificate request transport failure'
+        . ' | url=' . ABHA_BASE_URL . '/v3/profile/public/certificate'
+        . ' | curl_error=' . (string)$certificateResult['curl_error']
+        . ' | http_code=' . (int)$certificateResult['http_code']
+    );
+
     echo json_encode([
         'success' => false,
         'message' => 'ABDM certificate request cURL error.',
@@ -181,7 +204,23 @@ $result = abdmRequest(
 );
 
 if ($result['curl_error']) {
-    error_log('ABDM M1 TRANSPORT ERROR');
+    /*
+     * This used to log the bare string 'ABDM M1 TRANSPORT ERROR', which
+     * identified nothing: DNS failure, refused connection, TLS rejection and
+     * timeout were all indistinguishable. Server-side diagnostic only; the
+     * browser still receives the generic message.
+     *
+     * The local abdmRequest() below does not return curl_errno(), so only the
+     * cURL text is available here. modules/abdm/auth.php, which every M1
+     * endpoint calls first, logs the numeric errno as well.
+     */
+    error_log(
+        '[ABDM-M1] Aadhaar OTP request transport failure'
+        . ' | url=' . ABHA_BASE_URL . '/v3/enrollment/request/otp'
+        . ' | curl_error=' . (string)$result['curl_error']
+        . ' | http_code=' . (int)$result['http_code']
+    );
+
     echo json_encode([
         'success' => false,
         'message' => 'Unable to reach ABDM.'

@@ -78,8 +78,24 @@ $tokenResult = abdmGetAccessToken();
 if (!$tokenResult['success']) {
     // Never echo the raw token result: on failure it carries the gateway's raw
     // error body, and on an unexpected shape it could carry a token.
-    // Log the transport status only - no body, no token, no identifier.
-    error_log('ABDM M1 AUTH FAILED | http_code=' . (int)($tokenResult['http_code'] ?? 0));
+    // Log the transport status and the reason only - no body, no token, no
+    // identifier.
+    //
+    // 'reason' is the field that identifies the failure. Four of the six
+    // branches in abdmGetAccessToken() report http_code = 0, so logging the
+    // status alone collapses a missing settings row, a blank credential, a cURL
+    // transport error and a gateway rejection into one indistinguishable line.
+    // Safe to log: auth.php builds 'error' from its own literals and the
+    // gateway's error code, never from a token.
+    error_log(
+        'ABDM M1 AUTH FAILED'
+        . ' | http_code=' . (int)($tokenResult['http_code'] ?? 0)
+        . ' | reason=' . substr(
+            (string)($tokenResult['error'] ?? $tokenResult['message'] ?? 'unknown'),
+            0,
+            300
+        )
+    );
     echo json_encode([
         'success' => false,
         'message' => 'Unable to authorise with ABDM. Please try again.'

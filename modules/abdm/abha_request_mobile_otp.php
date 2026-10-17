@@ -78,10 +78,31 @@ function getAccessToken() {
         ]
     );
     if ($result['curl_error']) {
-        error_log('ABDM M1 TRANSPORT ERROR');
+        /*
+         * The bare label this used to log ("ABDM M1 TRANSPORT ERROR") carried no
+         * information at all: DNS failure, refused connection, TLS rejection and
+         * timeout were indistinguishable. The transport detail is server-side
+         * only - the browser still receives the generic message.
+         *
+         * Note this local abdmRequest() does not return curl_errno(), so the
+         * numeric code is unavailable here; the cURL text still identifies the
+         * class of failure (it names the certificate for a CA problem, the host
+         * for DNS, and so on). modules/abdm/auth.php, used by every other M1
+         * endpoint, logs the numeric errno as well.
+         */
+        error_log(
+            '[ABDM-M1] session token request failed'
+            . ' | url=' . ABDM_SESSION_URL
+            . ' | curl_error=' . (string)$result['curl_error']
+            . ' | http_code=' . (int)$result['http_code']
+        );
+
         return [
             'success' => false,
-            'message' => 'Unable to reach ABDM.'
+            'message' => 'Unable to reach ABDM.',
+            'error' => 'cURL Error: ' . (string)$result['curl_error'],
+            'http_code' => (int)$result['http_code'],
+            'response' => null
         ];
     }
     $data = json_decode($result['response'], true);
@@ -135,8 +156,20 @@ $tokenResult = getAccessToken();
 if (!$tokenResult['success']) {
     // Never echo the raw token result: on failure it carries the gateway's raw
     // error body, and on an unexpected shape it could carry a token.
-    // Log the transport status only - no body, no token, no identifier.
-    error_log('ABDM M1 AUTH FAILED | http_code=' . (int)($tokenResult['http_code'] ?? 0));
+    // Log the transport status and the reason only - no body, no token, no
+    // identifier.
+    //
+    // This file calls its own getAccessToken() below, which returns 'message'
+    // rather than 'error', hence the fallback chain in the log line.
+    error_log(
+        'ABDM M1 AUTH FAILED'
+        . ' | http_code=' . (int)($tokenResult['http_code'] ?? 0)
+        . ' | reason=' . substr(
+            (string)($tokenResult['error'] ?? $tokenResult['message'] ?? 'unknown'),
+            0,
+            300
+        )
+    );
     echo json_encode([
         'success' => false,
         'message' => 'Unable to authorise with ABDM. Please try again.'
