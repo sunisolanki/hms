@@ -1,0 +1,163 @@
+RewriteEngine On
+
+# ------------------------------------------------------------------
+# Block direct web access to log files.
+# <FilesMatch> is applied during authorisation, AFTER mod_rewrite has
+# already translated the request, so every RewriteRule below continues
+# to work unchanged. Only files ending in .log are affected; all PHP
+# routes, assets and the ABDM callback endpoints are untouched.
+# Requires Apache 2.4 (mod_authz_core), which is loaded.
+# ------------------------------------------------------------------
+<FilesMatch "\.log$">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>
+
+# ------------------------------------------------------------------
+# Deny direct web access to specific sensitive files by exact name.
+#
+# <FilesMatch> matches the BASENAME and is evaluated during
+# authorisation, so:
+#   - it does not affect mod_rewrite translation (all ABDM callback
+#     RewriteRules continue to work unchanged);
+#   - it does NOT affect PHP `require`/`include`, which read the
+#     filesystem directly. includes/control_db.php is still included
+#     normally by api/v3/hip/patient/care-context/discover and
+#     api/v3/hip/health-information/request; only direct HTTP GETs of
+#     it are refused.
+#
+# Exactly one file of each name exists in the tree (verified), so these
+# rules cannot shadow an unrelated application file.
+# ------------------------------------------------------------------
+<FilesMatch "^(abdm_callback_debug\.txt|abdm_token_cache\.json|installation\.txt|control_db\.php|db_credentials\.php)$">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>
+
+# ------------------------------------------------------------------
+# Deny direct web access to ABDM test / diagnostic harnesses.
+#
+# These were relocated out of the document root to
+# D:\WebSplend-HMS\devtools\working_copy\ on 2026-10-14. This block is
+# defence in depth: if any of them is ever copied back into the webroot it is
+# refused at authorisation instead of executing.
+#
+# Every basename below was verified to be UNIQUE in the tree at the time this
+# rule was added, so it cannot shadow an unrelated application file.
+#
+# Two relocated files are deliberately NOT listed, because their basenames are
+# not unique and a FilesMatch on them would break production routes:
+#   modules/abdm/test/index.php  -> "index.php" also names 25 other files,
+#                                  including every api/v3 endpoint.
+#   modules/abdm/m3/test.php     -> "test.php" also names vendor test helpers.
+#
+# communication/test_email.php is also NOT listed: it is a live admin feature
+# linked from communication/email_settings.php, not an ABDM harness.
+# ------------------------------------------------------------------
+<FilesMatch "^(debug\.php|m2_index\.php|m3_fidelius_crypto_test\.php|m3_health_data_encrypt_test\.php|m3_health_data_push_payload_test\.php|m3_health_data_push_test\.php|m3_health_information_notify_test\.php|m3_session_diagnostic\.php|test_auth\.php|test_m2_confirm_hitype\.php|test_m2_discovery\.php|test_m2_prescription_confirm_payload\.php|test_prescription_consent_payload\.php|test_sodium\.php|test_user_linking_discover\.php|test_x25519_import\.php)$">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Order allow,deny
+        Deny from all
+    </IfModule>
+</FilesMatch>
+
+# ------------------------------------------------------------------
+# Disable directory listings.
+#
+# Apache serves an "Index of" page for any directory without an
+# index file. That exposed the uploads/ tree and also revealed the
+# internal layout of /includes/, /api/v3/ and /vendor/.
+#
+# Options -Indexes removes ONLY the generated listing. Direct access to
+# a known file path is unaffected, so uploads such as
+# /uploads/announcements/<file>.png and ticket attachments continue to
+# load exactly as before - the application links to them by explicit
+# path, never by listing.
+# ------------------------------------------------------------------
+Options -Indexes
+
+# ABDM M2 - HIP callbacks (primary format: /api/v3/...)
+RewriteRule ^api/v3/hip/patient/care-context/discover/?$ /api/v3/hip/patient/care-context/discover/index.php [L]
+RewriteRule ^api/v3/hip/token/on-generate-token/?$ /api/v3/hip/token/on-generate-token/index.php [L]
+RewriteRule ^api/v3/hip/link/care-context/init/?$ /api/v3/hip/link/care-context/init/index.php [L]
+RewriteRule ^api/v3/hip/link/care-context/confirm/?$ /api/v3/hip/link/care-context/confirm/index.php [L]
+
+# ABDM M2 - HIP callbacks (alternate format: /v3/... without api prefix)
+RewriteRule ^v3/hip/patient/care-context/discover/?$ /api/v3/hip/patient/care-context/discover/index.php [L]
+RewriteRule ^v3/hip/token/on-generate-token/?$ /api/v3/hip/token/on-generate-token/index.php [L]
+RewriteRule ^v3/hip/link/care-context/init/?$ /api/v3/hip/link/care-context/init/index.php [L]
+RewriteRule ^v3/hip/link/care-context/confirm/?$ /api/v3/hip/link/care-context/confirm/index.php [L]
+RewriteRule ^v3/link/on_carecontext/?$ /api/v3/link/on_carecontext/index.php [L]
+
+# ABDM M2 - HIP callbacks (alternate format: /api/callbacks/v3/...)
+RewriteRule ^api/callbacks/v3/hip/patient/care-context/discover/?$ /api/v3/hip/patient/care-context/discover/index.php [L]
+RewriteRule ^api/callbacks/v3/hip/token/on-generate-token/?$ /api/v3/hip/token/on-generate-token/index.php [L]
+RewriteRule ^api/callbacks/v3/hip/link/care-context/init/?$ /api/v3/hip/link/care-context/init/index.php [L]
+RewriteRule ^api/callbacks/v3/hip/link/care-context/confirm/?$ /api/v3/hip/link/care-context/confirm/index.php [L]
+RewriteRule ^api/callbacks/v3/link/on_carecontext/?$ /api/v3/link/on_carecontext/index.php [L]
+
+# ABDM M3 - HIU Consent Request Notify callback (Receives the signed consent artifact)
+RewriteRule ^api/v3/hiu/consent/request/on-notify/?$ /api/v3/hiu/consent/request/on-notify/index.php [L]
+
+# ABDM M3 - HIU Health Information Notify callback (Gateway notifies HIU that data is ready)
+RewriteRule ^api/v3/hiu/health-information/on-notify/?$ /api/v3/hiu/health-information/on-notify/index.php [L]
+
+# ABDM M3 - HIU Health Information Data Push (Gateway pushes the actual encrypted data)
+RewriteRule ^api/v3/hiu/health-information/data-push/?$ /api/v3/hiu/health-information/data-push/index.php [L]
+
+# ABDM M3 - HIP Health Information Request callback
+RewriteRule ^api/v3/hip/health-information/request/?$ /api/v3/hip/health-information/request/index.php [L]
+
+# ABDM M3 - HIU Consent Request Notify callback
+RewriteRule ^api/v3/hiu/consent/request/notify/?$ /api/v3/hiu/consent/request/notify/index.php [L]
+
+# ABDM M3 - HIU Consent Request Init callback
+RewriteRule ^api/v3/hiu/consent/request/on-init/?$ /api/v3/hiu/consent/request/on-init/index.php [L]
+
+# ABDM M3 - HIP Consent Notify callback
+RewriteRule ^api/v3/consent/request/hip/notify/?$ /api/v3/consent/request/hip/notify/index.php [L]
+
+# ABDM M3 - HIU Consent Request Status callback
+RewriteRule ^api/v3/hiu/consent/request/on-status/?$ /api/v3/hiu/consent/request/on-status/index.php [L]
+RewriteRule ^api/v3/hiu/consent/on-fetch/?$ /api/v3/hiu/consent/on-fetch/index.php [L]
+
+# ABDM M3 - HIU Health Information callbacks
+RewriteRule ^api/v3/hiu/health-information/on-request/?$ /api/v3/hiu/health-information/on-request/index.php [L]
+RewriteRule ^api/v3/hiu/health-information/data-push/?$ /api/v3/hiu/health-information/data-push/index.php [L]
+
+# ABDM M2 - Existing HIP linking callback
+RewriteRule ^api/v3/link/on_carecontext/?$ /api/v3/link/on_carecontext/index.php [L]
+
+# ABDM M2 - HIU callbacks
+RewriteRule ^api/v3/hiu/patient/care-context/on-discover/?$ /api/v3/hiu/patient/care-context/on-discover/index.php [L]
+RewriteRule ^api/v3/hiu/patient/care-context/on-init/?$ /api/v3/hiu/patient/care-context/on-init/index.php [L]
+RewriteRule ^api/v3/hiu/patient/care-context/on-confirm/?$ /api/v3/hiu/patient/care-context/on-confirm/index.php [L]
+
+# DO NOT REMOVE THIS LINE AND THE LINES BELOW IPALLOWID:weGu8I0w5m
+allow from 13.203.243.253
+# DO NOT REMOVE THIS LINE AND THE LINES ABOVE weGu8I0w5m:IPALLOWID
+
+# DO NOT REMOVE THIS LINE AND THE LINES BELOW IPALLOWID:4WI7V4ZCvW
+allow from 13.203.245.166
+# DO NOT REMOVE THIS LINE AND THE LINES ABOVE 4WI7V4ZCvW:IPALLOWID
+
+# DO NOT REMOVE THIS LINE AND THE LINES BELOW IPALLOWID:q60ujaUer0
+allow from 65.0.113.207
+# DO NOT REMOVE THIS LINE AND THE LINES ABOVE q60ujaUer0:IPALLOWID
+
+# DO NOT REMOVE THIS LINE AND THE LINES BELOW IPALLOWID:GdGRY0MD22
+allow from 14.143.232.140
+# DO NOT REMOVE THIS LINE AND THE LINES ABOVE GdGRY0MD22:IPALLOWID

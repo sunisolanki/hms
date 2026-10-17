@@ -1,0 +1,37 @@
+# =====================================================================
+# WebSplend HMS - ignore rules
+# =====================================================================
+# NOTE: this project is not currently a git repository. This file is
+# defence-in-depth in case version control is introduced later. It does
+# NOT, by itself, prevent a file from being deployed by any manual copy
+# step. The effective control for local secrets is that they live in
+# C:\xampp\websplend-local\, outside both the application root and the
+# web document root, and therefore never appear in a project copy set.
+# =====================================================================
+
+# Local-only database credentials and configuration - NEVER deploy
+websplend-local-db.php
+/includes/local_db_config.php
+/.env
+/.env.*
+*.local.php
+
+# Local-only TLS material
+*.local.crt
+*.local.key
+*.local.pem
+
+# Pre-existing artefacts that must never reach a server
+abdm_callback_debug.txt
+*.log
+.rnd
+
+# Uploads / runtime
+/uploads/*
+!/uploads/.gitkeep
+
+# OS / editor noise
+Thumbs.db
+.DS_Store
+*.swp
+*~

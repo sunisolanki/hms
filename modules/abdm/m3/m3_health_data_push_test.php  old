@@ -1,0 +1,1158 @@
+<?php
+
+declare(strict_types=1);
+
+header('Content-Type: application/json; charset=utf-8');
+
+const HOSPITAL_ID = 3;
+const REQUEST_ID = 17;
+const FHIR_FILE = __DIR__ . '/m3_test_bundle_004_16.json';
+const DATA_PUSH_ENDPOINT = 'https://hms.websplend.com/api/v3/hiu/health-information/data-push';
+
+function jsonResponse(array $data, int $statusCode = 200): void
+{
+    http_response_code($statusCode);
+    echo json_encode(
+        $data,
+        JSON_UNESCAPED_SLASHES |
+        JSON_UNESCAPED_UNICODE |
+        JSON_PRETTY_PRINT
+    );
+    exit;
+}
+
+function generateRequestId(): string
+{
+    return sprintf(
+        '%04x%04x-%04x-%04x-%04x-%04x%04x%04x',
+        random_int(0, 0xffff),
+        random_int(0, 0xffff),
+        random_int(0, 0xffff),
+        random_int(0, 0x0fff) | 0x4000,
+        random_int(0, 0x3fff) | 0x8000,
+        random_int(0, 0xffff),
+        random_int(0, 0xffff),
+        random_int(0, 0xffff)
+    );
+}
+
+function xorBytes(string $a, string $b): string
+{
+    if (strlen($a) !== strlen($b)) {
+        throw new RuntimeException('XOR input lengths do not match.');
+    }
+
+    return $a ^ $b;
+}
+
+function x25519PublicKeyToPem(string $rawPublicKey): string
+{
+    if (strlen($rawPublicKey) !== 32) {
+        throw new RuntimeException('X25519 public key must be exactly 32 bytes.');
+    }
+
+    $derPrefix = hex2bin('302a300506032b656e032100');
+
+    if ($derPrefix === false) {
+        throw new RuntimeException('Unable to build X25519 DER prefix.');
+    }
+
+    $der = $derPrefix . $rawPublicKey;
+
+    return "-----BEGIN PUBLIC KEY-----\n" .
+        chunk_split(base64_encode($der), 64, "\n") .
+        "-----END PUBLIC KEY-----\n";
+}
+
+function isoUtcFromMysql(?string $value): ?string
+{
+    if (!$value) {
+        return null;
+    }
+
+    try {
+        $date = new DateTime(
+            $value,
+            new DateTimeZone('Asia/Kolkata')
+        );
+
+        $date->setTimezone(new DateTimeZone('UTC'));
+
+        return $date->format('Y-m-d\TH:i:s.v\Z');
+    } catch (Throwable $e) {
+        return null;
+    }
+}
+
+function getRequestRow(mysqli $conn): ?array
+{
+    $stmt = $conn->prepare("
+        SELECT
+            id,
+            hospital_id,
+            patient_id,
+            consent_request_id,
+            consent_id,
+            care_context_reference,
+            date_from,
+            date_to,
+            data_push_url,
+            crypto_alg,
+            curve,
+            key_parameters,
+            key_value,
+            nonce,
+            expiry,
+            private_key,
+            transaction_id,
+            request_id,
+            status
+        FROM abdm_m3_health_information_requests
+        WHERE id = ?
+          AND hospital_id = ?
+        LIMIT 1
+    ");
+
+    if (!$stmt) {
+        throw new RuntimeException(
+            'Unable to prepare health-information request lookup: ' .
+            $conn->error
+        );
+    }
+
+    $requestId = REQUEST_ID;
+    $hospitalId = HOSPITAL_ID;
+
+    $stmt->bind_param(
+        'ii',
+        $requestId,
+        $hospitalId
+    );
+
+    if (!$stmt->execute()) {
+        $error = $stmt->error;
+        $stmt->close();
+
+        throw new RuntimeException(
+            'Unable to execute health-information request lookup: ' .
+            $error
+        );
+    }
+
+    $result = $stmt->get_result();
+    $row = $result->fetch_assoc();
+
+    $stmt->close();
+
+    return $row ?: null;
+}
+
+function updateDataResponse(
+    mysqli $conn,
+    int $localRequestId,
+    string $response
+): void {
+    $stmt = $conn->prepare("
+        UPDATE abdm_m3_health_information_requests
+        SET
+            data_response = ?,
+            updated_at = NOW()
+        WHERE id = ?
+        LIMIT 1
+    ");
+
+    if (!$stmt) {
+        return;
+    }
+
+    $stmt->bind_param(
+        'si',
+        $response,
+        $localRequestId
+    );
+
+    $stmt->execute();
+    $stmt->close();
+}
+
+try {
+
+    if ($_SERVER['REQUEST_METHOD'] !== 'GET' &&
+        $_SERVER['REQUEST_METHOD'] !== 'POST') {
+        jsonResponse([
+            'success' => false,
+            'message' => 'Only GET or POST is allowed for this test.'
+        ], 405);
+    }
+
+    if (!extension_loaded('openssl')) {
+        jsonResponse([
+            'success' => false,
+            'message' => 'OpenSSL extension is not available.'
+        ], 500);
+    }
+
+    if (!extension_loaded('mysqli')) {
+        jsonResponse([
+            'success' => false,
+            'message' => 'mysqli extension is not available.'
+        ], 500);
+    }
+
+    if (!file_exists(FHIR_FILE)) {
+        jsonResponse([
+            'success' => false,
+            'message' => 'FHIR test bundle file not found.',
+            'file' => FHIR_FILE
+        ], 404);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | CONTROL DATABASE
+    |--------------------------------------------------------------------------
+    |
+    | Keep the same password already present in your current working
+    | M3 callback file. Do not send the password to me.
+    |
+    */
+
+    $controlDbHost = 'localhost';
+    $controlDbUser = 'u336643111_control';
+
+    /*
+    | IMPORTANT:
+    | Replace ONLY the placeholder below with your existing local
+    | control database password.
+    */
+
+    $controlDbPassword = 'Rohtha@751';
+
+    $controlDbName = 'u336643111_control';
+
+    $controlConn = new mysqli(
+        $controlDbHost,
+        $controlDbUser,
+        $controlDbPassword,
+        $controlDbName
+    );
+
+    if ($controlConn->connect_error) {
+        jsonResponse([
+            'success' => false,
+            'message' => 'Control database connection failed.'
+        ], 500);
+    }
+
+    $controlConn->set_charset('utf8mb4');
+    $controlConn->query("SET time_zone = '+05:30'");
+
+    /*
+    |--------------------------------------------------------------------------
+    | RESOLVE HMS TENANT DATABASE
+    |--------------------------------------------------------------------------
+    */
+
+    $tenantId = 'HMS1';
+
+    $stmt = $controlConn->prepare("
+        SELECT
+            tenant_id,
+            hospital_id,
+            database_host,
+            database_name,
+            database_user,
+            database_password,
+            access_status
+        FROM projects
+        WHERE tenant_id = ?
+          AND hospital_id = ?
+        LIMIT 1
+    ");
+
+    if (!$stmt) {
+        $controlConn->close();
+
+        jsonResponse([
+            'success' => false,
+            'message' => 'Tenant lookup prepare failed.'
+        ], 500);
+    }
+
+    $hospitalId = HOSPITAL_ID;
+
+    $stmt->bind_param(
+        'si',
+        $tenantId,
+        $hospitalId
+    );
+
+    if (!$stmt->execute()) {
+        $error = $stmt->error;
+        $stmt->close();
+        $controlConn->close();
+
+        jsonResponse([
+            'success' => false,
+            'message' => 'Tenant lookup failed.',
+            'error' => $error
+        ], 500);
+    }
+
+    $tenantResult = $stmt->get_result();
+    $tenant = $tenantResult->fetch_assoc();
+
+    $stmt->close();
+    $controlConn->close();
+
+    if (!$tenant) {
+        jsonResponse([
+            'success' => false,
+            'message' => 'HMS1 tenant configuration not found.'
+        ], 500);
+    }
+
+    if (($tenant['access_status'] ?? '') !== 'Allowed') {
+        jsonResponse([
+            'success' => false,
+            'message' => 'Tenant access is not allowed.'
+        ], 403);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | HMS DATABASE
+    |--------------------------------------------------------------------------
+    */
+
+    $conn = new mysqli(
+        $tenant['database_host'] ?: 'localhost',
+        $tenant['database_user'],
+        $tenant['database_password'],
+        $tenant['database_name']
+    );
+
+    if ($conn->connect_error) {
+        jsonResponse([
+            'success' => false,
+            'message' => 'Tenant database connection failed.'
+        ], 500);
+    }
+
+    $conn->set_charset('utf8mb4');
+    $conn->query("SET time_zone = '+05:30'");
+
+    /*
+    |--------------------------------------------------------------------------
+    | LOAD REQUEST #17
+    |--------------------------------------------------------------------------
+    */
+
+    $request = getRequestRow($conn);
+
+    if (!$request) {
+        $conn->close();
+
+        jsonResponse([
+            'success' => false,
+            'message' => 'Health-information request #17 was not found.'
+        ], 404);
+    }
+
+    $localRequestId = (int)$request['id'];
+
+    $transactionId = trim(
+        (string)($request['transaction_id'] ?? '')
+    );
+
+    if ($transactionId === '') {
+        $conn->close();
+
+        jsonResponse([
+            'success' => false,
+            'message' => 'Transaction ID is missing from request #17.'
+        ], 400);
+    }
+
+    $careContextReference = trim(
+        (string)($request['care_context_reference'] ?? '')
+    );
+
+    if ($careContextReference === '') {
+        $conn->close();
+
+        jsonResponse([
+            'success' => false,
+            'message' => 'Care context reference is missing.'
+        ], 400);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | LOAD HIU KEY MATERIAL
+    |--------------------------------------------------------------------------
+    */
+
+    $hiuPublicRaw = base64_decode(
+        (string)$request['key_value'],
+        true
+    );
+
+    $hiuNonce = base64_decode(
+        (string)$request['nonce'],
+        true
+    );
+
+    $hiuPrivatePem = (string)$request['private_key'];
+
+    if ($hiuPublicRaw === false ||
+        strlen($hiuPublicRaw) !== 32) {
+        $conn->close();
+
+        jsonResponse([
+            'success' => false,
+            'message' => 'Stored HIU public key is invalid.'
+        ], 500);
+    }
+
+    if ($hiuNonce === false ||
+        strlen($hiuNonce) !== 32) {
+        $conn->close();
+
+        jsonResponse([
+            'success' => false,
+            'message' => 'Stored HIU nonce is invalid.'
+        ], 500);
+    }
+
+    if ($hiuPrivatePem === '') {
+        $conn->close();
+
+        jsonResponse([
+            'success' => false,
+            'message' => 'Stored HIU private key is missing.'
+        ], 500);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | VERIFY HIU PRIVATE KEY
+    |--------------------------------------------------------------------------
+    */
+
+    $hiuPrivateKey = openssl_pkey_get_private(
+        $hiuPrivatePem
+    );
+
+    if ($hiuPrivateKey === false) {
+        $conn->close();
+
+        jsonResponse([
+            'success' => false,
+            'message' => 'Unable to import stored HIU private key.'
+        ], 500);
+    }
+
+    $hiuDetails = openssl_pkey_get_details(
+        $hiuPrivateKey
+    );
+
+    if ($hiuDetails === false ||
+        !isset($hiuDetails['x25519']['pub_key'])) {
+        $conn->close();
+
+        jsonResponse([
+            'success' => false,
+            'message' => 'Stored private key is not a valid X25519 key.'
+        ], 500);
+    }
+
+    $recoveredHiuPublicRaw =
+        $hiuDetails['x25519']['pub_key'];
+
+    if (!hash_equals(
+        $hiuPublicRaw,
+        $recoveredHiuPublicRaw
+    )) {
+        $conn->close();
+
+        jsonResponse([
+            'success' => false,
+            'message' => 'Stored HIU public key does not match private key.'
+        ], 500);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | LOAD FHIR BUNDLE
+    |--------------------------------------------------------------------------
+    */
+
+    $fhirJson = file_get_contents(FHIR_FILE);
+
+    if ($fhirJson === false || trim($fhirJson) === '') {
+        $conn->close();
+
+        jsonResponse([
+            'success' => false,
+            'message' => 'Unable to read FHIR test bundle.'
+        ], 500);
+    }
+
+    $fhirBundle = json_decode(
+        $fhirJson,
+        true
+    );
+
+    if (!is_array($fhirBundle)) {
+        $conn->close();
+
+        jsonResponse([
+            'success' => false,
+            'message' => 'FHIR bundle JSON is invalid.'
+        ], 400);
+    }
+
+    if (($fhirBundle['resourceType'] ?? '') !== 'Bundle') {
+        $conn->close();
+
+        jsonResponse([
+            'success' => false,
+            'message' => 'FHIR resourceType is not Bundle.'
+        ], 400);
+    }
+
+    if (($fhirBundle['type'] ?? '') !== 'document') {
+        $conn->close();
+
+        jsonResponse([
+            'success' => false,
+            'message' => 'FHIR Bundle type is not document.'
+        ], 400);
+    }
+
+    $fhirEntryCount = isset($fhirBundle['entry']) &&
+        is_array($fhirBundle['entry'])
+        ? count($fhirBundle['entry'])
+        : 0;
+
+    /*
+    |--------------------------------------------------------------------------
+    | GENERATE HIP X25519 KEY PAIR
+    |--------------------------------------------------------------------------
+    */
+
+    $hipPrivateKey = openssl_pkey_new([
+        'x25519' => []
+    ]);
+
+    if ($hipPrivateKey === false) {
+        $conn->close();
+
+        jsonResponse([
+            'success' => false,
+            'message' => 'Unable to generate HIP X25519 key pair.'
+        ], 500);
+    }
+
+    $hipDetails = openssl_pkey_get_details(
+        $hipPrivateKey
+    );
+
+    if ($hipDetails === false ||
+        !isset($hipDetails['x25519']['pub_key'])) {
+        $conn->close();
+
+        jsonResponse([
+            'success' => false,
+            'message' => 'Unable to read HIP X25519 public key.'
+        ], 500);
+    }
+
+    $hipPublicRaw =
+        $hipDetails['x25519']['pub_key'];
+
+    if (!is_string($hipPublicRaw) ||
+        strlen($hipPublicRaw) !== 32) {
+        $conn->close();
+
+        jsonResponse([
+            'success' => false,
+            'message' => 'Generated HIP public key is invalid.'
+        ], 500);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | HIP NONCE
+    |--------------------------------------------------------------------------
+    */
+
+    $hipNonce = random_bytes(32);
+
+    /*
+    |--------------------------------------------------------------------------
+    | CONVERT HIU PUBLIC KEY TO PEM
+    |--------------------------------------------------------------------------
+    */
+
+    $hiuPublicPem = x25519PublicKeyToPem(
+        $hiuPublicRaw
+    );
+
+    $hiuPublicKey = openssl_pkey_get_public(
+        $hiuPublicPem
+    );
+
+    if ($hiuPublicKey === false) {
+        $conn->close();
+
+        jsonResponse([
+            'success' => false,
+            'message' => 'Unable to import HIU X25519 public key.'
+        ], 500);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | ECDH
+    |--------------------------------------------------------------------------
+    */
+
+    $sharedSecret = openssl_pkey_derive(
+        $hiuPublicKey,
+        $hipPrivateKey,
+        32
+    );
+
+    if ($sharedSecret === false ||
+        strlen($sharedSecret) !== 32) {
+        $conn->close();
+
+        jsonResponse([
+            'success' => false,
+            'message' => 'X25519 ECDH key derivation failed.'
+        ], 500);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | NONCE COMBINATION
+    |--------------------------------------------------------------------------
+    */
+
+    $combinedNonce = xorBytes(
+        $hipNonce,
+        $hiuNonce
+    );
+
+    if (strlen($combinedNonce) !== 32) {
+        $conn->close();
+
+        jsonResponse([
+            'success' => false,
+            'message' => 'Combined nonce length is invalid.'
+        ], 500);
+    }
+
+    $salt = substr(
+        $combinedNonce,
+        0,
+        20
+    );
+
+    $iv = substr(
+        $combinedNonce,
+        20,
+        12
+    );
+
+    /*
+    |--------------------------------------------------------------------------
+    | HKDF
+    |--------------------------------------------------------------------------
+    */
+
+    $aesKey = hash_hkdf(
+        'sha256',
+        $sharedSecret,
+        32,
+        '',
+        $salt
+    );
+
+    if (!is_string($aesKey) ||
+        strlen($aesKey) !== 32) {
+        $conn->close();
+
+        jsonResponse([
+            'success' => false,
+            'message' => 'Unable to derive AES-256 key.'
+        ], 500);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | AES-256-GCM ENCRYPTION
+    |--------------------------------------------------------------------------
+    */
+
+    $gcmTag = '';
+
+    $ciphertext = openssl_encrypt(
+        $fhirJson,
+        'aes-256-gcm',
+        $aesKey,
+        OPENSSL_RAW_DATA,
+        $iv,
+        $gcmTag
+    );
+
+    if ($ciphertext === false) {
+        $conn->close();
+
+        jsonResponse([
+            'success' => false,
+            'message' => 'AES-256-GCM encryption failed.'
+        ], 500);
+    }
+
+    if (!is_string($gcmTag) ||
+        strlen($gcmTag) !== 16) {
+        $conn->close();
+
+        jsonResponse([
+            'success' => false,
+            'message' => 'Invalid GCM authentication tag.'
+        ], 500);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | CONTENT = CIPHERTEXT + GCM TAG
+    |--------------------------------------------------------------------------
+    */
+
+    $encryptedContent =
+        $ciphertext . $gcmTag;
+
+    /*
+    |--------------------------------------------------------------------------
+    | CHECKSUM
+    |--------------------------------------------------------------------------
+    |
+    | Current M2/M3 test implementation uses MD5 over the plaintext
+    | FHIR payload. This is retained for consistency with our existing
+    | sandbox test.
+    |
+    */
+
+    $checksum = md5(
+        $fhirJson
+    );
+
+    /*
+    |--------------------------------------------------------------------------
+    | LOCAL DECRYPTION TEST
+    |--------------------------------------------------------------------------
+    */
+
+    $receivedCiphertext = substr(
+        $encryptedContent,
+        0,
+        -16
+    );
+
+    $receivedTag = substr(
+        $encryptedContent,
+        -16
+    );
+
+    $decryptedText = openssl_decrypt(
+        $receivedCiphertext,
+        'aes-256-gcm',
+        $aesKey,
+        OPENSSL_RAW_DATA,
+        $iv,
+        $receivedTag
+    );
+
+    if ($decryptedText === false) {
+        $conn->close();
+
+        jsonResponse([
+            'success' => false,
+            'message' => 'Local AES-256-GCM decryption failed.'
+        ], 500);
+    }
+
+    $decryptionMatch =
+        hash_equals(
+            $fhirJson,
+            $decryptedText
+        );
+
+    if (!$decryptionMatch) {
+        $conn->close();
+
+        jsonResponse([
+            'success' => false,
+            'message' => 'Local encryption/decryption mismatch.'
+        ], 500);
+    }
+
+    $checksumVerification =
+        hash_equals(
+            $checksum,
+            md5($decryptedText)
+        );
+
+    if (!$checksumVerification) {
+        $conn->close();
+
+        jsonResponse([
+            'success' => false,
+            'message' => 'Local checksum verification failed.'
+        ], 500);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | DATA PUSH EXPIRY
+    |--------------------------------------------------------------------------
+    */
+
+    $expiry = isoUtcFromMysql(
+        $request['expiry'] ?? null
+    );
+
+    if ($expiry === null) {
+        $expiryDate = new DateTime(
+            'now',
+            new DateTimeZone('UTC')
+        );
+
+        $expiryDate->modify('+10 minutes');
+
+        $expiry = $expiryDate->format(
+            'Y-m-d\TH:i:s.v\Z'
+        );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | DATA PUSH KEY MATERIAL
+    |--------------------------------------------------------------------------
+    |
+    | The receiver needs the actual HIP ephemeral public key and nonce
+    | used for this encryption operation.
+    |
+    */
+
+    $keyMaterial = [
+        'cryptoAlg' => 'ECDH',
+        'curve' => 'Curve25519',
+        'dhPublicKey' => [
+            'expiry' => $expiry,
+            'parameters' => 'Curve25519/32byte random key',
+            'keyValue' => base64_encode(
+                $hipPublicRaw
+            )
+        ],
+        'nonce' => base64_encode(
+            $hipNonce
+        )
+    ];
+
+    /*
+    |--------------------------------------------------------------------------
+    | DATA PUSH ENTRY
+    |--------------------------------------------------------------------------
+    */
+
+    $entry = [
+        'content' => base64_encode(
+            $encryptedContent
+        ),
+        'media' => 'application/fhir+json',
+        'checksum' => $checksum,
+        'careContextReference' => $careContextReference
+    ];
+
+    /*
+    |--------------------------------------------------------------------------
+    | DATA PUSH PAYLOAD
+    |--------------------------------------------------------------------------
+    */
+
+    $payload = [
+        'pageNumber' => 0,
+        'pageCount' => 1,
+        'transactionId' => $transactionId,
+        'entries' => [
+            $entry
+        ],
+        'keyMaterial' => $keyMaterial
+    ];
+
+    $jsonPayload = json_encode(
+        $payload,
+        JSON_UNESCAPED_SLASHES |
+        JSON_UNESCAPED_UNICODE
+    );
+
+    if ($jsonPayload === false) {
+        $conn->close();
+
+        jsonResponse([
+            'success' => false,
+            'message' => 'Unable to encode DataPush payload.'
+        ], 500);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | DATA PUSH REQUEST ID / TIMESTAMP
+    |--------------------------------------------------------------------------
+    */
+
+    $dataPushRequestId =
+        generateRequestId();
+
+    $dataPushTimestamp =
+        gmdate('Y-m-d\TH:i:s.v\Z');
+
+    /*
+    |--------------------------------------------------------------------------
+    | LOAD ACTUAL HIU ID
+    |--------------------------------------------------------------------------
+    */
+
+    $stmt = $conn->prepare("
+        SELECT hiu_id
+        FROM abdm_m3_settings
+        WHERE hospital_id = ?
+          AND environment = 'Sandbox'
+          AND status = 'Active'
+        ORDER BY id DESC
+        LIMIT 1
+    ");
+
+    if (!$stmt) {
+        $conn->close();
+
+        jsonResponse([
+            'success' => false,
+            'message' => 'Unable to load active M3 HIU settings.'
+        ], 500);
+    }
+
+    $hospitalId = HOSPITAL_ID;
+
+    $stmt->bind_param(
+        'i',
+        $hospitalId
+    );
+
+    if (!$stmt->execute()) {
+        $error = $stmt->error;
+        $stmt->close();
+        $conn->close();
+
+        jsonResponse([
+            'success' => false,
+            'message' => 'Unable to execute HIU settings lookup.',
+            'error' => $error
+        ], 500);
+    }
+
+    $settingsResult =
+        $stmt->get_result();
+
+    $settings =
+        $settingsResult->fetch_assoc();
+
+    $stmt->close();
+
+    if (!$settings) {
+        $conn->close();
+
+        jsonResponse([
+            'success' => false,
+            'message' => 'Active Sandbox M3 settings not found.'
+        ], 404);
+    }
+
+    $hiuId = trim(
+        (string)($settings['hiu_id'] ?? '')
+    );
+
+    if ($hiuId === '') {
+        $conn->close();
+
+        jsonResponse([
+            'success' => false,
+            'message' => 'HIU ID is empty in M3 settings.'
+        ], 500);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | DATA PUSH CURL
+    |--------------------------------------------------------------------------
+    */
+
+    $ch = curl_init(
+        DATA_PUSH_ENDPOINT
+    );
+
+    curl_setopt_array(
+        $ch,
+        [
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => $jsonPayload,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_HTTPHEADER => [
+                'Content-Type: application/json',
+                'Accept: application/json',
+                'REQUEST-ID: ' . $dataPushRequestId,
+                'TIMESTAMP: ' . $dataPushTimestamp,
+                'X-HIU-ID: ' . $hiuId
+            ],
+            CURLOPT_TIMEOUT => 60,
+            CURLOPT_CONNECTTIMEOUT => 20,
+            CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_SSL_VERIFYHOST => 2
+        ]
+    );
+
+    $dataPushResponse =
+        curl_exec($ch);
+
+    $dataPushCurlError =
+        curl_error($ch);
+
+    $dataPushHttpStatus =
+        (int)curl_getinfo(
+            $ch,
+            CURLINFO_HTTP_CODE
+        );
+
+    curl_close($ch);
+
+    /*
+    |--------------------------------------------------------------------------
+    | STORE DATA PUSH RESPONSE
+    |--------------------------------------------------------------------------
+    */
+
+    $storedDataResponse =
+        $dataPushResponse !== false &&
+        $dataPushResponse !== ''
+            ? $dataPushResponse
+            : $dataPushCurlError;
+
+    updateDataResponse(
+        $conn,
+        $localRequestId,
+        $storedDataResponse
+    );
+
+    $decodedDataPushResponse = null;
+
+    if (is_string($dataPushResponse) &&
+        $dataPushResponse !== '') {
+        $decodedDataPushResponse =
+            json_decode(
+                $dataPushResponse,
+                true
+            );
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | CLOSE DATABASE
+    |--------------------------------------------------------------------------
+    */
+
+    $conn->close();
+
+    /*
+    |--------------------------------------------------------------------------
+    | FINAL RESULT
+    |--------------------------------------------------------------------------
+    */
+
+    $success =
+        $dataPushHttpStatus >= 200 &&
+        $dataPushHttpStatus < 300 &&
+        $dataPushCurlError === '';
+
+    jsonResponse([
+        'success' => $success,
+        'message' => $success
+            ? 'DataPush endpoint accepted the health-information payload.'
+            : 'DataPush endpoint returned non-success status.',
+        'local_request_id' => $localRequestId,
+        'transaction_id' => $transactionId,
+        'care_context_reference' => $careContextReference,
+        'hiu_id' => $hiuId,
+        'fhir_resource_type' =>
+            $fhirBundle['resourceType'] ?? null,
+        'fhir_bundle_type' =>
+            $fhirBundle['type'] ?? null,
+        'fhir_entry_count' => $fhirEntryCount,
+        'plain_text_bytes' => strlen($fhirJson),
+        'hip_public_key_bytes' => strlen($hipPublicRaw),
+        'hip_nonce_bytes' => strlen($hipNonce),
+        'shared_secret_bytes' => strlen($sharedSecret),
+        'salt_bytes' => strlen($salt),
+        'iv_bytes' => strlen($iv),
+        'aes_key_bytes' => strlen($aesKey),
+        'aes_256_gcm_encryption' => 'SUCCESS',
+        'ciphertext_bytes' => strlen($ciphertext),
+        'gcm_tag_bytes' => strlen($gcmTag),
+        'encrypted_content_bytes' =>
+            strlen($encryptedContent),
+        'content_base64_bytes' =>
+            strlen(base64_encode($encryptedContent)),
+        'checksum_algorithm' => 'MD5',
+        'checksum' => $checksum,
+        'page_number' => 0,
+        'page_count' => 1,
+        'media' => 'application/fhir+json',
+        'local_decryption' => 'SUCCESS',
+        'local_decryption_match' => $decryptionMatch,
+        'checksum_verification' => $checksumVerification
+            ? 'PASS'
+            : 'FAIL',
+        'key_material' => [
+            'cryptoAlg' => 'ECDH',
+            'curve' => 'Curve25519',
+            'parameters' =>
+                'Curve25519/32byte random key',
+            'hip_public_key_bytes' =>
+                strlen($hipPublicRaw),
+            'hip_nonce_bytes' =>
+                strlen($hipNonce)
+        ],
+        'data_push_http_status' =>
+            $dataPushHttpStatus,
+        'data_push_request_id' =>
+            $dataPushRequestId,
+        'data_push_curl_error' =>
+            $dataPushCurlError,
+        'data_push_response' =>
+            $decodedDataPushResponse ??
+            $dataPushResponse
+    ], $success ? 200 : 502);
+
+} catch (Throwable $e) {
+
+    jsonResponse([
+        'success' => false,
+        'message' => 'M3 Health Data Push test failed.',
+        'error' => $e->getMessage()
+    ], 500);
+}
+?>

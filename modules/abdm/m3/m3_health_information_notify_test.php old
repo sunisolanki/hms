@@ -1,0 +1,371 @@
+<?php
+header('Content-Type: application/json; charset=utf-8');
+session_start();
+
+require_once __DIR__ . '/../../../includes/db.php';
+
+function jsonResponse(array $data, int $statusCode = 200): void
+{
+    http_response_code($statusCode);
+    echo json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+    exit;
+}
+
+function generateRequestId(): string
+{
+    return sprintf(
+        '%08x-%04x-%04x-%04x-%012x',
+        random_int(0, 0xffffffff),
+        random_int(0, 0xffff),
+        random_int(0, 0xffff),
+        random_int(0, 0xffff),
+        random_int(0, 0xffffffffffff)
+    );
+}
+
+function utcTimestamp(): string
+{
+    $dt = new DateTime('now', new DateTimeZone('UTC'));
+    return $dt->format('Y-m-d\TH:i:s.v\Z');
+}
+
+if ($_SERVER['REQUEST_METHOD'] !== 'GET' && $_SERVER['REQUEST_METHOD'] !== 'POST') {
+    jsonResponse([
+        'success' => false,
+        'message' => 'Only GET and POST requests are allowed.'
+    ], 405);
+}
+
+$localRequestId = (int)(
+    $_GET['local_request_id']
+    ?? $_POST['local_request_id']
+    ?? 17
+);
+
+if ($localRequestId <= 0) {
+    jsonResponse([
+        'success' => false,
+        'message' => 'Invalid local_request_id.'
+    ], 400);
+}
+
+if (!isset($conn) || !($conn instanceof mysqli)) {
+    jsonResponse([
+        'success' => false,
+        'message' => 'Database connection is not available.'
+    ], 500);
+}
+
+$conn->set_charset('utf8mb4');
+
+$requestStmt = $conn->prepare("
+    SELECT
+        id,
+        hospital_id,
+        patient_id,
+        consent_request_id,
+        consent_id,
+        care_context_reference,
+        transaction_id,
+        request_id,
+        status
+    FROM abdm_m3_health_information_requests
+    WHERE id = ?
+    LIMIT 1
+");
+
+if (!$requestStmt) {
+    jsonResponse([
+        'success' => false,
+        'message' => 'Unable to prepare health-information request query.',
+        'error' => $conn->error
+    ], 500);
+}
+
+$requestStmt->bind_param('i', $localRequestId);
+
+if (!$requestStmt->execute()) {
+    $error = $requestStmt->error;
+    $requestStmt->close();
+
+    jsonResponse([
+        'success' => false,
+        'message' => 'Unable to execute health-information request query.',
+        'error' => $error
+    ], 500);
+}
+
+$requestData = $requestStmt->get_result()->fetch_assoc();
+$requestStmt->close();
+
+if (!$requestData) {
+    jsonResponse([
+        'success' => false,
+        'message' => 'Health-information request not found.',
+        'local_request_id' => $localRequestId
+    ], 404);
+}
+
+$hospitalId = (int)$requestData['hospital_id'];
+$consentId = trim((string)$requestData['consent_id']);
+$transactionId = trim((string)$requestData['transaction_id']);
+$careContextReference = trim((string)$requestData['care_context_reference']);
+
+if ($hospitalId <= 0) {
+    jsonResponse([
+        'success' => false,
+        'message' => 'Hospital ID is missing from health-information request.'
+    ], 400);
+}
+
+if ($consentId === '') {
+    jsonResponse([
+        'success' => false,
+        'message' => 'Consent ID is missing from health-information request.'
+    ], 400);
+}
+
+if ($transactionId === '') {
+    jsonResponse([
+        'success' => false,
+        'message' => 'Transaction ID is missing from health-information request.'
+    ], 400);
+}
+
+if ($careContextReference === '') {
+    jsonResponse([
+        'success' => false,
+        'message' => 'Care context reference is missing from health-information request.'
+    ], 400);
+}
+
+$settingsStmt = $conn->prepare("
+    SELECT
+        id,
+        hospital_id,
+        environment,
+        facility_id,
+        hiu_id,
+        bridge_id,
+        status
+    FROM abdm_m3_settings
+    WHERE hospital_id = ?
+      AND environment = 'Sandbox'
+      AND status = 'Active'
+    ORDER BY id DESC
+    LIMIT 1
+");
+
+if (!$settingsStmt) {
+    jsonResponse([
+        'success' => false,
+        'message' => 'Unable to prepare M3 settings query.',
+        'error' => $conn->error
+    ], 500);
+}
+
+$settingsStmt->bind_param('i', $hospitalId);
+
+if (!$settingsStmt->execute()) {
+    $error = $settingsStmt->error;
+    $settingsStmt->close();
+
+    jsonResponse([
+        'success' => false,
+        'message' => 'Unable to execute M3 settings query.',
+        'error' => $error
+    ], 500);
+}
+
+$settings = $settingsStmt->get_result()->fetch_assoc();
+$settingsStmt->close();
+
+if (!$settings) {
+    jsonResponse([
+        'success' => false,
+        'message' => 'Active Sandbox M3 settings not found.'
+    ], 404);
+}
+
+$hiuId = trim((string)$settings['hiu_id']);
+$hipId = trim((string)$settings['facility_id']);
+
+if ($hiuId === '') {
+    jsonResponse([
+        'success' => false,
+        'message' => 'HIU ID is missing from M3 settings.'
+    ], 400);
+}
+
+if ($hipId === '') {
+    jsonResponse([
+        'success' => false,
+        'message' => 'Facility ID is missing from M3 settings.'
+    ], 400);
+}
+
+$tokenStmt = $conn->prepare("
+    SELECT
+        id,
+        access_token,
+        token_type,
+        expires_at
+    FROM abdm_m3_sessions
+    WHERE hospital_id = ?
+      AND environment = 'Sandbox'
+      AND status = 'Active'
+      AND expires_at > NOW()
+    ORDER BY id DESC
+    LIMIT 1
+");
+
+if (!$tokenStmt) {
+    jsonResponse([
+        'success' => false,
+        'message' => 'Unable to prepare ABDM session query.',
+        'error' => $conn->error
+    ], 500);
+}
+
+$tokenStmt->bind_param('i', $hospitalId);
+
+if (!$tokenStmt->execute()) {
+    $error = $tokenStmt->error;
+    $tokenStmt->close();
+
+    jsonResponse([
+        'success' => false,
+        'message' => 'Unable to execute ABDM session query.',
+        'error' => $error
+    ], 500);
+}
+
+$sessionData = $tokenStmt->get_result()->fetch_assoc();
+$tokenStmt->close();
+
+if (!$sessionData) {
+    jsonResponse([
+        'success' => false,
+        'message' => 'No active Sandbox ABDM session token found.'
+    ], 401);
+}
+
+$accessToken = trim((string)$sessionData['access_token']);
+$tokenType = trim((string)$sessionData['token_type']);
+
+if ($accessToken === '') {
+    jsonResponse([
+        'success' => false,
+        'message' => 'ABDM access token is missing.'
+    ], 401);
+}
+
+if ($tokenType === '') {
+    $tokenType = 'Bearer';
+}
+
+$authorization = ucfirst(strtolower($tokenType)) . ' ' . $accessToken;
+
+$requestId = generateRequestId();
+$timestamp = utcTimestamp();
+$doneAt = utcTimestamp();
+
+$payload = [
+    'notification' => [
+        'consentId' => $consentId,
+        'transactionId' => $transactionId,
+        'doneAt' => $doneAt,
+        'notifier' => [
+    'type' => 'HIU',
+    'id' => $hiuId
+],
+        'statusNotification' => [
+            'sessionStatus' => 'RECEIVED',
+            'hipId' => $hipId,
+            'statusResponses' => [
+                [
+                    'careContextReference' => $careContextReference,
+                    'hiStatus' => 'OK',
+                    'description' => 'Health information received successfully.'
+                ]
+            ]
+        ]
+    ]
+];
+
+$jsonPayload = json_encode(
+    $payload,
+    JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
+);
+
+if ($jsonPayload === false) {
+    jsonResponse([
+        'success' => false,
+        'message' => 'Unable to encode Notify payload.',
+        'json_error' => json_last_error_msg()
+    ], 500);
+}
+
+$url = 'https://dev.abdm.gov.in/api/hiecm/data-flow/v3/health-information/notify';
+
+$headers = [
+    'Content-Type: application/json',
+    'Authorization: ' . $authorization,
+    'REQUEST-ID: ' . $requestId,
+    'TIMESTAMP: ' . $timestamp,
+    'X-CM-ID: sbx'
+];
+
+$ch = curl_init($url);
+
+curl_setopt_array($ch, [
+    CURLOPT_POST => true,
+    CURLOPT_POSTFIELDS => $jsonPayload,
+    CURLOPT_HTTPHEADER => $headers,
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_TIMEOUT => 60,
+    CURLOPT_CONNECTTIMEOUT => 20,
+    CURLOPT_SSL_VERIFYPEER => true,
+    CURLOPT_SSL_VERIFYHOST => 2
+]);
+
+$responseBody = curl_exec($ch);
+$curlError = curl_error($ch);
+$httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+
+curl_close($ch);
+
+if ($curlError !== '') {
+    jsonResponse([
+        'success' => false,
+        'message' => 'ABDM Notify request failed at network level.',
+        'local_request_id' => $localRequestId,
+        'curl_error' => $curlError
+    ], 502);
+}
+
+$decodedResponse = json_decode($responseBody, true);
+
+if (!is_array($decodedResponse)) {
+    $decodedResponse = [
+        'raw' => $responseBody
+    ];
+}
+
+jsonResponse([
+    'success' => $httpCode >= 200 && $httpCode < 300,
+    'message' => $httpCode >= 200 && $httpCode < 300
+        ? 'ABDM health-information Notify request completed.'
+        : 'ABDM health-information Notify request was rejected.',
+    'local_request_id' => $localRequestId,
+    'hospital_id' => $hospitalId,
+    'hiu_id' => $hiuId,
+    'hip_id' => $hipId,
+    'care_context_reference' => $careContextReference,
+    'session_status' => 'RECEIVED',
+    'hi_status' => 'OK',
+    'notify_http_status' => $httpCode,
+    'notify_request_id' => $requestId,
+    'curl_error' => '',
+    'abdm_response' => $decodedResponse
+], $httpCode > 0 ? $httpCode : 502);

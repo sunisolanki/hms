@@ -1,0 +1,481 @@
+{
+  "resourceType": "Bundle",
+  "id": "004-16-opconsult-test",
+  "meta": {
+    "profile": [
+      "https://nrces.in/ndhm/fhir/r4/StructureDefinition/DocumentBundle"
+    ]
+  },
+  "identifier": {
+    "system": "urn:ietf:rfc:3986",
+    "value": "urn:uuid:004-16-opconsult-test"
+  },
+  "type": "document",
+  "timestamp": "2026-09-29T16:28:18+05:30",
+  "entry": [
+    {
+      "fullUrl": "urn:uuid:composition-004-16",
+      "resource": {
+        "resourceType": "Composition",
+        "id": "composition-004-16",
+        "meta": {
+          "profile": [
+            "https://nrces.in/ndhm/fhir/r4/StructureDefinition/OPConsultRecord"
+          ]
+        },
+        "language": "en-IN",
+        "status": "final",
+        "type": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "371530004",
+              "display": "Clinical consultation report"
+            }
+          ]
+        },
+        "subject": {
+          "reference": "urn:uuid:patient-2"
+        },
+        "encounter": {
+          "reference": "urn:uuid:encounter-16"
+        },
+        "date": "2026-09-24T10:30:00+05:30",
+        "author": [
+          {
+            "reference": "urn:uuid:practitioner-6"
+          }
+        ],
+        "title": "OP Consultation Record",
+        "section": [
+          {
+            "title": "Chief Complaints",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://snomed.info/sct",
+                  "code": "422843007",
+                  "display": "Chief complaint"
+                }
+              ]
+            },
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\">Chief Complaint prescription</div>"
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:condition-1"
+              }
+            ]
+          },
+          {
+            "title": "Physical Examination",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://snomed.info/sct",
+                  "code": "425044008",
+                  "display": "Physical examination"
+                }
+              ]
+            },
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\">Weight 55 kg; Height 123 cm; BMI 36.35; Pain scale 3</div>"
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:observation-weight"
+              },
+              {
+                "reference": "urn:uuid:observation-height"
+              },
+              {
+                "reference": "urn:uuid:observation-bmi"
+              },
+              {
+                "reference": "urn:uuid:observation-pain"
+              }
+            ]
+          },
+          {
+            "title": "Investigation Advice",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://snomed.info/sct",
+                  "code": "721963009",
+                  "display": "Investigation advice"
+                }
+              ]
+            },
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\">CBC (LAB-0002)</div>"
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:service-request-2"
+              }
+            ]
+          },
+          {
+            "title": "Medications",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://snomed.info/sct",
+                  "code": "721912009",
+                  "display": "Medication management"
+                }
+              ]
+            },
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\">Paracetamol 500; OD; After Meal; quantity 1; morning 1, noon 0, evening 0</div>"
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:medication-request-35"
+              }
+            ]
+          },
+          {
+            "title": "Advice",
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\">Advice prescription</div>"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:patient-2",
+      "resource": {
+        "resourceType": "Patient",
+        "id": "patient-2",
+        "meta": {
+          "profile": [
+            "https://nrces.in/ndhm/fhir/r4/StructureDefinition/Patient"
+          ]
+        },
+        "identifier": [
+          {
+            "use": "usual",
+            "value": "2"
+          }
+        ],
+        "name": [
+          {
+            "use": "official",
+            "text": "Rohit Kumar",
+            "family": "Kumar",
+            "given": [
+              "Rohit"
+            ]
+          }
+        ],
+        "gender": "male",
+        "birthDate": "1991-03-07"
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:practitioner-6",
+      "resource": {
+        "resourceType": "Practitioner",
+        "id": "practitioner-6",
+        "meta": {
+          "profile": [
+            "https://nrces.in/ndhm/fhir/r4/StructureDefinition/Practitioner"
+          ]
+        },
+        "identifier": [
+          {
+            "use": "official",
+            "value": "12345678"
+          }
+        ],
+        "name": [
+          {
+            "use": "official",
+            "text": "Dr. Sheetal",
+            "family": "Sheetal",
+            "given": [
+              "Dr. Sheetal"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:organization-3",
+      "resource": {
+        "resourceType": "Organization",
+        "id": "organization-3",
+        "meta": {
+          "profile": [
+            "https://nrces.in/ndhm/fhir/r4/StructureDefinition/Organization"
+          ]
+        },
+        "identifier": [
+          {
+            "use": "official",
+            "value": "LKH1"
+          }
+        ],
+        "name": "Thakur Hospital"
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:encounter-16",
+      "resource": {
+        "resourceType": "Encounter",
+        "id": "encounter-16",
+        "meta": {
+          "profile": [
+            "https://nrces.in/ndhm/fhir/r4/StructureDefinition/Encounter"
+          ]
+        },
+        "status": "finished",
+        "class": {
+          "system": "http://terminology.hl7.org/CodeSystem/v3-ActCode",
+          "code": "VR",
+          "display": "virtual"
+        },
+        "subject": {
+          "reference": "urn:uuid:patient-2"
+        },
+        "participant": [
+          {
+            "individual": {
+              "reference": "urn:uuid:practitioner-6"
+            }
+          }
+        ],
+        "period": {
+          "start": "2026-09-24T10:15:00+05:30",
+          "end": "2026-09-24T10:30:00+05:30"
+        },
+        "serviceProvider": {
+          "reference": "urn:uuid:organization-3"
+        },
+        "identifier": [
+          {
+            "value": "004-16"
+          }
+        ]
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:condition-1",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "condition-1",
+        "meta": {
+          "profile": [
+            "https://nrces.in/ndhm/fhir/r4/StructureDefinition/Condition"
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active"
+            }
+          ]
+        },
+        "subject": {
+          "reference": "urn:uuid:patient-2"
+        },
+        "encounter": {
+          "reference": "urn:uuid:encounter-16"
+        },
+        "code": {
+          "text": "Sublingual Gland"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:observation-weight",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "observation-weight",
+        "meta": {
+          "profile": [
+            "https://nrces.in/ndhm/fhir/r4/StructureDefinition/Observation"
+          ]
+        },
+        "status": "final",
+        "code": {
+          "text": "Weight"
+        },
+        "subject": {
+          "reference": "urn:uuid:patient-2"
+        },
+        "encounter": {
+          "reference": "urn:uuid:encounter-16"
+        },
+        "valueQuantity": {
+          "value": 55,
+          "unit": "kg"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:observation-height",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "observation-height",
+        "meta": {
+          "profile": [
+            "https://nrces.in/ndhm/fhir/r4/StructureDefinition/Observation"
+          ]
+        },
+        "status": "final",
+        "code": {
+          "text": "Height"
+        },
+        "subject": {
+          "reference": "urn:uuid:patient-2"
+        },
+        "encounter": {
+          "reference": "urn:uuid:encounter-16"
+        },
+        "valueQuantity": {
+          "value": 123,
+          "unit": "cm"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:observation-bmi",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "observation-bmi",
+        "meta": {
+          "profile": [
+            "https://nrces.in/ndhm/fhir/r4/StructureDefinition/Observation"
+          ]
+        },
+        "status": "final",
+        "code": {
+          "text": "BMI"
+        },
+        "subject": {
+          "reference": "urn:uuid:patient-2"
+        },
+        "encounter": {
+          "reference": "urn:uuid:encounter-16"
+        },
+        "valueQuantity": {
+          "value": 36.35
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:observation-pain",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "observation-pain",
+        "meta": {
+          "profile": [
+            "https://nrces.in/ndhm/fhir/r4/StructureDefinition/Observation"
+          ]
+        },
+        "status": "final",
+        "code": {
+          "text": "Pain scale"
+        },
+        "subject": {
+          "reference": "urn:uuid:patient-2"
+        },
+        "encounter": {
+          "reference": "urn:uuid:encounter-16"
+        },
+        "valueQuantity": {
+          "value": 3
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:medication-request-35",
+      "resource": {
+        "resourceType": "MedicationRequest",
+        "id": "medication-request-35",
+        "meta": {
+          "profile": [
+            "https://nrces.in/ndhm/fhir/r4/StructureDefinition/MedicationRequest"
+          ]
+        },
+        "status": "active",
+        "intent": "order",
+        "medicationCodeableConcept": {
+          "text": "Paracetamol 500"
+        },
+        "subject": {
+          "reference": "urn:uuid:patient-2"
+        },
+        "encounter": {
+          "reference": "urn:uuid:encounter-16"
+        },
+        "authoredOn": "2026-09-29T16:28:18+05:30",
+        "requester": {
+          "reference": "urn:uuid:practitioner-6"
+        },
+        "dosageInstruction": [
+          {
+            "text": "OD, After Meal; morning 1, noon 0, evening 0",
+            "timing": {
+              "code": {
+                "text": "OD"
+              }
+            },
+            "additionalInstruction": [
+              {
+                "text": "After Meal"
+              }
+            ]
+          }
+        ],
+        "dispenseRequest": {
+          "quantity": {
+            "value": 1
+          }
+        },
+        "note": [
+          {
+            "text": "Paracetamol for testing"
+          }
+        ]
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:service-request-2",
+      "resource": {
+        "resourceType": "ServiceRequest",
+        "id": "service-request-2",
+        "meta": {
+          "profile": [
+            "https://nrces.in/ndhm/fhir/r4/StructureDefinition/ServiceRequest"
+          ]
+        },
+        "status": "active",
+        "intent": "order",
+        "code": {
+          "text": "CBC (LAB-0002)"
+        },
+        "subject": {
+          "reference": "urn:uuid:patient-2"
+        },
+        "encounter": {
+          "reference": "urn:uuid:encounter-16"
+        },
+        "requester": {
+          "reference": "urn:uuid:practitioner-6"
+        }
+      }
+    }
+  ]
+}

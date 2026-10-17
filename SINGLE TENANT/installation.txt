@@ -1,0 +1,8 @@
+| File                        | Standalone Client |
+| --------------------------- | ----------------- |
+| `includes/db.php`           | 🔄 Replace        |
+| `includes/tenant.php`       | ❌ Remove          |
+| `includes/tenant_db.php`    | ❌ Remove          |
+| `includes/tenant_guard.php` | ❌ Remove          |
+| `/index.php`         | 🔄 Simplify       |
+| `login/tenant_blocked.php`  | ❌ Remove          |
