@@ -78,21 +78,24 @@ $controlConn->query("SET time_zone = '+05:30'");
 
 $tenantId = 'HMS1';
 
-$stmt = $controlConn->prepare("
-    SELECT
-        tenant_id,
-        hospital_id,
-        database_host,
-        database_port,
-        database_name,
-        database_user,
-        database_password,
-        access_status
-    FROM projects
-    WHERE tenant_id = ?
-      AND hospital_id = 3
-    LIMIT 1
-");
+$tenantColumns = hmsTenantColumnList([
+    'tenant_id',
+    'hospital_id',
+    'database_host',
+    'database_port',
+    'database_name',
+    'database_user',
+    'database_password',
+    'access_status',
+], $controlConn);
+
+$stmt = $controlConn->prepare(
+    'SELECT ' . $tenantColumns . "
+     FROM projects
+     WHERE tenant_id = ?
+       AND hospital_id = 3
+     LIMIT 1"
+);
 
 if (!$stmt) {
     $controlConn->close();

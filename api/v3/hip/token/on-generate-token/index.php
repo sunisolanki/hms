@@ -65,17 +65,20 @@ if ($controlConn->connect_error) {
 
 $controlConn->set_charset('utf8mb4');
 
-$stmt = $controlConn->prepare("
-    SELECT
-        database_host,
-        database_port,
-        database_name,
-        database_user,
-        database_password
-    FROM projects
-    WHERE database_name = 'u336643111_hms'
-    LIMIT 1
-");
+$tenantColumns = hmsTenantColumnList([
+    'database_host',
+    'database_port',
+    'database_name',
+    'database_user',
+    'database_password',
+], $controlConn);
+
+$stmt = $controlConn->prepare(
+    'SELECT ' . $tenantColumns . "
+     FROM projects
+     WHERE database_name = 'u336643111_hms'
+     LIMIT 1"
+);
 
 if (!$stmt) {
     http_response_code(500);

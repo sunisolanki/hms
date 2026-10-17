@@ -44,24 +44,33 @@ function getTenant(string $tenantId): ?array
 {
     global $controlConn;
 
-    $stmt = $controlConn->prepare("
-        SELECT
-            id,
-            tenant_id,
-            hospital_id,
-            client_name AS hospital_name,
-            database_host,
-            database_port,
-            database_name,
-            database_user,
-            database_password,
-            deployment_type,
-            domain,
-            access_status
-        FROM projects
-        WHERE tenant_id = ?
-        LIMIT 1
-    ");
+    /*
+     * `database_port` is selected through hmsTenantColumnList() so this lookup
+     * still works against a control database whose `projects` table has no such
+     * column. On PHP 8.1+ naming a missing column makes prepare() throw, which
+     * the staff login would report as a tenant-connection failure.
+     */
+    $tenantColumns = hmsTenantColumnList([
+        'id',
+        'tenant_id',
+        'hospital_id',
+        'client_name AS hospital_name',
+        'database_host',
+        'database_port',
+        'database_name',
+        'database_user',
+        'database_password',
+        'deployment_type',
+        'domain',
+        'access_status',
+    ], $controlConn);
+
+    $stmt = $controlConn->prepare(
+        'SELECT ' . $tenantColumns . '
+         FROM projects
+         WHERE tenant_id = ?
+         LIMIT 1'
+    );
 
     if (!$stmt) {
         return null;

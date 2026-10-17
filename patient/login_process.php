@@ -1,8 +1,19 @@
 <?php
 declare(strict_types=1);
 
-ini_set('display_errors', '1');
-ini_set('display_startup_errors', '1');
+/*
+ * Error display is OFF unless HMS_DEBUG=1 is set in the environment.
+ *
+ * display_errors=1 printed absolute paths and SQL with every stack trace on a
+ * public endpoint. hmsEnv() decides, so db_credentials.php is loaded first; it
+ * has no side effects on include.
+ */
+require_once __DIR__ . '/../includes/db_credentials.php';
+
+$hmsDebug = hmsEnv('HMS_DEBUG') === '1';
+
+ini_set('display_errors', $hmsDebug ? '1' : '0');
+ini_set('display_startup_errors', $hmsDebug ? '1' : '0');
 error_reporting(E_ALL);
 
 ini_set('session.cookie_httponly', '1');
@@ -45,24 +56,28 @@ try {
      */
     $tenant = null;
 
-    $stmt = $controlConn->prepare("
-        SELECT
-            id,
-            tenant_id,
-            hospital_id,
-            client_name AS hospital_name,
-            database_host,
-            database_port,
-            database_name,
-            database_user,
-            database_password,
-            deployment_type,
-            domain,
-            access_status
-        FROM projects
-        WHERE hospital_id = ?
-        LIMIT 1
-    ");
+    // Column list resolved defensively; see hmsTenantColumnList().
+    $tenantColumns = hmsTenantColumnList([
+        'id',
+        'tenant_id',
+        'hospital_id',
+        'client_name AS hospital_name',
+        'database_host',
+        'database_port',
+        'database_name',
+        'database_user',
+        'database_password',
+        'deployment_type',
+        'domain',
+        'access_status',
+    ], $controlConn);
+
+    $stmt = $controlConn->prepare(
+        'SELECT ' . $tenantColumns . '
+         FROM projects
+         WHERE hospital_id = ?
+         LIMIT 1'
+    );
 
     $stmt->bind_param("s", $hospitalId);
     $stmt->execute();
@@ -95,7 +110,14 @@ try {
     $conn = hmsConnectMysqli($tenantCredentials);
 
     if ($conn->connect_error) {
-        throw new RuntimeException('Unable to connect to hospital database.');
+        throw new RuntimeException(sprintf(
+            'Hospital database connection failed for "%s" at %s:%d (errno %d): %s',
+            (string) ($tenantCredentials['db'] ?? '(no database name)'),
+            (string) ($tenantCredentials['host'] ?? 'localhost'),
+            (int) ($tenantCredentials['port'] ?? 3306),
+            (int) $conn->connect_errno,
+            (string) $conn->connect_error
+        ));
     }
 
     $conn->set_charset('utf8mb4');

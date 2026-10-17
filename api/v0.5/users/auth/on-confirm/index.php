@@ -148,42 +148,30 @@ $tenantId = 'HMS1';
  * discover/index.php:119-131 selects `database_port` from `projects` and fatals
  * with "Unknown column" on any control DB that predates the Aiven port support.
  * The local control database here is exactly such a schema: `projects` carries
- * database_host/name/user/password and no port column at all, so a straight copy
- * of that SELECT dies before any request is processed.
+ * database_host/name/user/password and no port column at at all, so a straight
+ * copy of that SELECT dies before any request is processed.
+ *
+ * The probe lives in hmsTenantColumnList() / hmsProjectsHasDatabasePort() and is
+ * shared by all twelve call sites; this endpoint no longer carries its own copy.
  *
  * The port is NOT simply dropped, because it is load-bearing in production: the
  * tenant database is on Aiven, which does not listen on 3306. hmsTenantCredentials()
  * already tolerates the key being absent - it reads $tenantRow['database_port'] ?? null
  * and falls back to 3306 - so the only problem is asking for a column that may
  * not exist.
- *
- * The probe result is cached per request. The column name comes from this file's
- * own literal, never from input, so interpolating it below is safe.
  */
-$hasDatabasePort = null;
-
-try {
-    $portProbe = $controlConn->query("SHOW COLUMNS FROM `projects` LIKE 'database_port'");
-    $hasDatabasePort = ($portProbe instanceof mysqli_result) && $portProbe->num_rows > 0;
-} catch (Throwable $e) {
-    $hasDatabasePort = false;
-}
-
-$tenantColumns = [
+$tenantColumns = hmsTenantColumnList([
     'tenant_id',
     'database_host',
     'database_name',
     'database_user',
     'database_password',
     'access_status',
-];
-
-if ($hasDatabasePort) {
-    $tenantColumns[] = 'database_port';
-}
+    'database_port',
+], $controlConn);
 
 $stmt = $controlConn->prepare(
-    'SELECT `' . implode('`,`', $tenantColumns) . '`
+    'SELECT ' . $tenantColumns . '
      FROM projects
      WHERE tenant_id = ?
      LIMIT 1'

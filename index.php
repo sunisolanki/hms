@@ -1,6 +1,27 @@
 <?php
-ini_set('display_errors', 1);
-ini_set('display_startup_errors', 1);
+/*
+ * Error display is OFF unless HMS_DEBUG=1 is set in the environment.
+ *
+ * This file and patient/login_process.php used to hardcode display_errors=1,
+ * which on production prints absolute filesystem paths (/var/www/html/...) and
+ * full SQL text with every stack trace. Set HMS_DEBUG=1 locally to get the old
+ * behaviour.
+ *
+ * NOTE: ~100 other files across this application still call
+ * ini_set('display_errors', 1) at the top of the file - patient/login.php among
+ * them, which is also publicly reachable. Only the two login entry points named
+ * above are covered by this change. Hardening the rest is a separate sweep.
+ *
+ * db_credentials.php is loaded here, before the ini_set calls, because hmsEnv()
+ * is what decides whether they turn errors on at all. It has no side effects on
+ * include.
+ */
+require_once __DIR__ . '/includes/db_credentials.php';
+
+$hmsDebug = hmsEnv('HMS_DEBUG') === '1';
+
+ini_set('display_errors', $hmsDebug ? '1' : '0');
+ini_set('display_startup_errors', $hmsDebug ? '1' : '0');
 error_reporting(E_ALL);
 /* Secure session settings */
 ini_set('session.cookie_httponly', 1);
@@ -170,24 +191,46 @@ if ($tenantId === '') {
     $_SESSION['error'] = "Tenant ID is required.";
     $tenant = null;
 } else {
+    /*
+     * The two failure modes are deliberately separated.
+     *
+     * They used to share one try/catch, which reported EVERY failure as
+     * "Unable to connect to the selected Tenant database." That message was
+     * actively misleading: a fault in the CONTROL database query - notably
+     * prepare() throwing on a missing projects.database_port column, which PHP
+     * 8.1+ does by default - surfaced here and named a tenant database that had
+     * never been contacted. Diagnosing it from the browser was impossible.
+     *
+     * Neither message below names a host, schema or credential. The driver
+     * detail is logged, not returned.
+     */
     try {
         $tenant = getTenant($tenantId);
-
-        if (!$tenant) {
-    $_SESSION['error'] = "Invalid Tenant ID.";
-    $tenant = null;
-} elseif ($tenant['access_status'] !== 'Allowed') {
-    header(
-        'Location: /login/tenant_blocked.php?tenant_id=' .
-        urlencode($tenant['tenant_id'])
-    );
-    exit;
-} else {
-    $conn = connectTenantDatabase($tenant);
-}
     } catch (Throwable $e) {
+        error_log('HMS login | control database tenant lookup failed: ' . $e->getMessage());
         $tenant = null;
-        $_SESSION['error'] = "Unable to connect to the selected Tenant database.";
+        $_SESSION['error'] = "Could not look up that Tenant ID. Please try again.";
+    }
+
+    if ($tenant === null) {
+        if (empty($_SESSION['error'])) {
+            $_SESSION['error'] = "Invalid Tenant ID.";
+        }
+    } elseif ($tenant['access_status'] !== 'Allowed') {
+        header(
+            'Location: /login/tenant_blocked.php?tenant_id=' .
+            urlencode($tenant['tenant_id'])
+        );
+        exit;
+    } else {
+        try {
+            $conn = connectTenantDatabase($tenant);
+        } catch (Throwable $e) {
+            // Carries the errno and host:port - see includes/tenant_db.php.
+            error_log('HMS login | ' . $e->getMessage());
+            $tenant = null;
+            $_SESSION['error'] = "Unable to connect to the selected Tenant database.";
+        }
     }
 }
     if (!isset($_SESSION['login_attempts'])) {

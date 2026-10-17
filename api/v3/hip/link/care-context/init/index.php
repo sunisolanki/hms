@@ -105,12 +105,20 @@ if ($controlConn->connect_error) {
 
 $controlConn->set_charset('utf8mb4');
 
-$stmt = $controlConn->prepare("
-    SELECT database_name, database_host, database_port, database_user, database_password
-    FROM projects
-    WHERE database_name = 'u336643111_hms'
-    LIMIT 1
-");
+$projectColumns = hmsTenantColumnList([
+    'database_name',
+    'database_host',
+    'database_port',
+    'database_user',
+    'database_password',
+], $controlConn);
+
+$stmt = $controlConn->prepare(
+    'SELECT ' . $projectColumns . "
+     FROM projects
+     WHERE database_name = 'u336643111_hms'
+     LIMIT 1"
+);
 
 if (!$stmt) {
     $controlConn->close();

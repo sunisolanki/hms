@@ -25,20 +25,30 @@ if ($controlConn->connect_error) {
 }
 $controlConn->set_charset("utf8mb4");
 $controlConn->query("SET time_zone = '+05:30'");
-$stmt = $controlConn->prepare("
-    SELECT
-        tenant_id,
-        hospital_id,
-        database_host,
-        database_port,
-        database_name,
-        database_user,
-        database_password,
-        access_status
-    FROM projects
-    WHERE tenant_id = ?
-    LIMIT 1
-");
+/*
+ * The column list goes through hmsTenantColumnList() because `database_port`
+ * is absent from a control database that predates managed-tenancy support, and
+ * on PHP 8.1+ naming a missing column makes prepare() THROW rather than return
+ * false - which would take down every staff page. See
+ * hmsProjectsHasDatabasePort() in includes/db_credentials.php.
+ */
+$tenantColumns = hmsTenantColumnList([
+    'tenant_id',
+    'hospital_id',
+    'database_host',
+    'database_port',
+    'database_name',
+    'database_user',
+    'database_password',
+    'access_status',
+], $controlConn);
+
+$stmt = $controlConn->prepare(
+    'SELECT ' . $tenantColumns . '
+     FROM projects
+     WHERE tenant_id = ?
+     LIMIT 1'
+);
 if (!$stmt) {
     $controlConn->close();
     die("Tenant lookup failed.");

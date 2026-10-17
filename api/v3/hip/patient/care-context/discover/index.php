@@ -116,19 +116,25 @@ $controlConn->set_charset('utf8mb4');
 // ─────────────────────────────────────────────────────────
 $tenantId = 'HMS1';
 
-$stmt = $controlConn->prepare("
-    SELECT
-        tenant_id,
-        database_host,
-        database_port,
-        database_name,
-        database_user,
-        database_password,
-        access_status
-    FROM projects
-    WHERE tenant_id = ?
-    LIMIT 1
-");
+// `database_port` is resolved through hmsTenantColumnList() so this lookup also
+// works against a control database whose `projects` table predates it. On PHP
+// 8.1+ naming a missing column makes prepare() throw.
+$tenantColumns = hmsTenantColumnList([
+    'tenant_id',
+    'database_host',
+    'database_port',
+    'database_name',
+    'database_user',
+    'database_password',
+    'access_status',
+], $controlConn);
+
+$stmt = $controlConn->prepare(
+    'SELECT ' . $tenantColumns . '
+     FROM projects
+     WHERE tenant_id = ?
+     LIMIT 1'
+);
 
 if (!$stmt) {
     error_log('ABDM DISCOVERY | Tenant lookup could not be prepared.');

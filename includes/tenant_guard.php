@@ -38,21 +38,25 @@ function checkTenantAccess(): array
     $controlConn->set_charset("utf8mb4");
     $controlConn->query("SET time_zone = '+05:30'");
 
-    $stmt = $controlConn->prepare("
-        SELECT
-            tenant_id,
-            hospital_id,
-            client_name AS hospital_name,
-            access_status,
-            database_host,
-            database_port,
-            database_name,
-            database_user,
-            database_password
-        FROM projects
-        WHERE tenant_id = ?
-        LIMIT 1
-    ");
+    // Column list resolved defensively; see hmsTenantColumnList().
+    $tenantColumns = hmsTenantColumnList([
+        'tenant_id',
+        'hospital_id',
+        'client_name AS hospital_name',
+        'access_status',
+        'database_host',
+        'database_port',
+        'database_name',
+        'database_user',
+        'database_password',
+    ], $controlConn);
+
+    $stmt = $controlConn->prepare(
+        'SELECT ' . $tenantColumns . '
+         FROM projects
+         WHERE tenant_id = ?
+         LIMIT 1'
+    );
 
     if (!$stmt) {
         $controlConn->close();
