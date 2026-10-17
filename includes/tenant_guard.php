@@ -45,6 +45,7 @@ function checkTenantAccess(): array
             client_name AS hospital_name,
             access_status,
             database_host,
+            database_port,
             database_name,
             database_user,
             database_password

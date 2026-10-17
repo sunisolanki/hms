@@ -52,6 +52,7 @@ try {
             hospital_id,
             client_name AS hospital_name,
             database_host,
+            database_port,
             database_name,
             database_user,
             database_password,
@@ -91,12 +92,7 @@ try {
 
     $databaseHost = $tenantCredentials['host'];
 
-    $conn = new mysqli(
-        $databaseHost,
-        $tenantCredentials['user'],
-        $tenantCredentials['pass'],
-        $tenantCredentials['db']
-    );
+    $conn = hmsConnectMysqli($tenantCredentials);
 
     if ($conn->connect_error) {
         throw new RuntimeException('Unable to connect to hospital database.');

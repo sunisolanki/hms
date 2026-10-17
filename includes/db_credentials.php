@@ -362,6 +362,7 @@ function hmsDatabaseUrl(string $url): array
         'user' => $user,
         'pass' => $pass,
         'port' => $port,
+        // Managed providers expect TLS; see hmsMysqliFlags().
     ];
 }
 
@@ -391,21 +392,44 @@ function hmsDatabaseUrlFromEnv(): ?array
 }
 
 /**
- * Client flags for a managed MySQL connection.
+ * Client flags for a MySQL connection.
  *
- * Aiven terminates TLS and expects it by default. Verification uses the system
- * trust store, which Aiven's public certificate chain satisfies. Set HMS_DB_SSL=0
- * to disable if a provider turns out not to offer TLS.
+ * TLS is requested only for managed connections. Aiven terminates TLS and
+ * expects it by default, and verification uses the system trust store, which
+ * Aiven's public certificate chain satisfies.
+ *
+ * It must NOT be requested for the local XAMPP path. XAMPP's MySQL has no TLS,
+ * and sending MYSQLI_CLIENT_SSL there aborts the handshake with errno 2006
+ * "MySQL server has gone away", which hides the real failure (a 1045 access
+ * error) and makes a perfectly good local install look broken.
+ *
+ * The default discriminator is the port. Managed providers essentially never
+ * serve on 3306, while local installs always do, so a non-default port selects
+ * TLS. After the tenant migration this is what makes the stored row use TLS,
+ * without needing an extra schema column.
+ *
+ * HMS_DB_SSL overrides the default in both directions:
+ *   1  force TLS on, for a provider on 3306 that does offer it
+ *   0  force TLS off, for a managed host that turns out not to offer it
+ *
+ * @param array<string,mixed> $credentials
  */
-function hmsMysqliFlags(): int
+function hmsMysqliFlags(array $credentials): int
 {
-    $disabled = $_SERVER['HMS_DB_SSL'] ?? getenv('HMS_DB_SSL');
+    $override = $_SERVER['HMS_DB_SSL'] ?? getenv('HMS_DB_SSL');
+    $override = is_string($override) ? strtolower(trim($override)) : '';
 
-    if (is_string($disabled) && trim($disabled) === '0') {
+    $ssl = defined('MYSQLI_CLIENT_SSL') ? MYSQLI_CLIENT_SSL : 0;
+
+    if ($override === '0') {
         return 0;
     }
 
-    return defined('MYSQLI_CLIENT_SSL') ? MYSQLI_CLIENT_SSL : 0;
+    if ($override === '1') {
+        return $ssl;
+    }
+
+    return (int) ($credentials['port'] ?? 3306) !== 3306 ? $ssl : 0;
 }
 
 /**
@@ -453,7 +477,7 @@ function hmsConnectMysqli(array $credentials): mysqli
             (string) ($credentials['db'] ?? ''),
             (int) ($credentials['port'] ?? 3306),
             null,
-            hmsMysqliFlags()
+            hmsMysqliFlags($credentials)
         );
     } catch (mysqli_sql_exception $e) {
         // Intentionally swallowed; see the docblock. Connection details are
@@ -523,14 +547,23 @@ function hmsControlCredentials(array $production): array
  * mode the external local values are used and the stored credentials are never
  * read.
  *
+ * 'port' is read from the optional `database_port` column, defaulting to 3306.
+ * That column is added by devtools/migrate_tenant_db_to_managed.php and is
+ * nullable, so rows that predate it - and any SELECT that does not yet name it -
+ * keep resolving to 3306 and behave exactly as before. Managed hosts such as
+ * Aiven do not listen on 3306, which is why the value has to reach mysqli() at
+ * all: a four-argument new mysqli() silently forces 3306.
+ *
  * host/db may legitimately match between local and production, so the
  * production-reuse guard only inspects user and pass.
  *
  * @param  array<string,mixed> $tenantRow
- * @return array{host:string,db:string,user:string,pass:string}
+ * @return array{host:string,db:string,user:string,pass:string,port:int}
  */
 function hmsTenantCredentials(array $tenantRow): array
 {
+    $storedPort = $tenantRow['database_port'] ?? null;
+
     $production = [
         'host' => !empty($tenantRow['database_host'])
             ? $tenantRow['database_host']
@@ -538,6 +571,9 @@ function hmsTenantCredentials(array $tenantRow): array
         'db'   => (string) ($tenantRow['database_name'] ?? ''),
         'user' => (string) ($tenantRow['database_user'] ?? ''),
         'pass' => (string) ($tenantRow['database_password'] ?? ''),
+        'port' => ($storedPort === null || $storedPort === '' || (int) $storedPort < 1)
+            ? 3306
+            : (int) $storedPort,
     ];
 
     if (!hmsIsLocalMode()) {
@@ -551,6 +587,8 @@ function hmsTenantCredentials(array $tenantRow): array
         'db'   => $local['tenant']['db'],
         'user' => $local['tenant']['user'],
         'pass' => $local['tenant']['pass'],
+        // Local installs are XAMPP; the local config file carries no port.
+        'port' => 3306,
     ];
 
     foreach (['user', 'pass'] as $key) {

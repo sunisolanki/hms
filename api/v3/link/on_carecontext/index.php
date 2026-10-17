@@ -121,6 +121,7 @@ $controlConn->set_charset('utf8mb4');
 $stmt = $controlConn->prepare("
     SELECT
         database_host,
+        database_port,
         database_name,
         database_user,
         database_password
@@ -160,12 +161,7 @@ if (!$tenant) {
 // external local tenant credentials are used and the stored ones are never read.
 $tenantCredentials = hmsTenantCredentials($tenant);
 
-$conn = new mysqli(
-    $tenantCredentials['host'],
-    $tenantCredentials['user'],
-    $tenantCredentials['pass'],
-    $tenantCredentials['db']
-);
+$conn = hmsConnectMysqli($tenantCredentials);
 
 if ($conn->connect_error) {
     http_response_code(500);

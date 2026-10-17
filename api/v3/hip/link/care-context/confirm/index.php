@@ -114,7 +114,7 @@ if ($controlConn->connect_error) {
 $controlConn->set_charset('utf8mb4');
 
 $stmt = $controlConn->prepare("
-    SELECT database_host, database_name, database_user, database_password
+    SELECT database_host, database_port, database_name, database_user, database_password
     FROM projects
     WHERE database_name = 'u336643111_hms'
     LIMIT 1
@@ -146,12 +146,7 @@ if (!$tenant) {
 // external local tenant credentials are used and the stored ones are never read.
 $tenantCredentials = hmsTenantCredentials($tenant);
 
-$conn = new mysqli(
-    $tenantCredentials['host'],
-    $tenantCredentials['user'],
-    $tenantCredentials['pass'],
-    $tenantCredentials['db']
-);
+$conn = hmsConnectMysqli($tenantCredentials);
 
 if ($conn->connect_error) {
     http_response_code(500);

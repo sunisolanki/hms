@@ -51,6 +51,7 @@ function getTenant(string $tenantId): ?array
             hospital_id,
             client_name AS hospital_name,
             database_host,
+            database_port,
             database_name,
             database_user,
             database_password,

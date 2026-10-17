@@ -413,6 +413,7 @@ $stmt = $controlConn->prepare("
         tenant_id,
         hospital_id,
         database_host,
+        database_port,
         database_name,
         database_user,
         database_password,
@@ -471,12 +472,11 @@ if (($tenant['access_status'] ?? '') !== 'Allowed') {
     ], 403);
 }
 
-$conn = new mysqli(
-    $tenant['database_host'] ?: 'localhost',
-    $tenant['database_user'],
-    $tenant['database_password'],
-    $tenant['database_name']
-);
+// This endpoint also built its tenant connection straight from the raw row,
+// bypassing hmsTenantCredentials(). That skipped both the HMS_ENV=local
+// override and the stored database_port, so it could not reach a managed
+// tenant database even after the row was migrated.
+$conn = hmsConnectMysqli(hmsTenantCredentials($tenant));
 
 if ($conn->connect_error) {
     responseJson([

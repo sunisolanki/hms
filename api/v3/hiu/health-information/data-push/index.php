@@ -101,6 +101,7 @@ $stmt = $controlConn->prepare("
         tenant_id,
         hospital_id,
         database_host,
+        database_port,
         database_name,
         database_user,
         database_password,
@@ -166,12 +167,7 @@ if ($tenant['access_status'] !== 'Allowed') {
    production behaviour is identical to before. */
 $tenantCredentials = hmsTenantCredentials($tenant);
 
-$conn = new mysqli(
-    $tenantCredentials['host'],
-    $tenantCredentials['user'],
-    $tenantCredentials['pass'],
-    $tenantCredentials['db']
-);
+$conn = hmsConnectMysqli($tenantCredentials);
 
 if ($conn->connect_error) {
     responseJson([

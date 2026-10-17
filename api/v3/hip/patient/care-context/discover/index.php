@@ -120,6 +120,7 @@ $stmt = $controlConn->prepare("
     SELECT
         tenant_id,
         database_host,
+        database_port,
         database_name,
         database_user,
         database_password,
@@ -172,12 +173,7 @@ if ($tenant['access_status'] !== 'Allowed') {
 // $tenantCredentials is reused by the reconnect below.
 $tenantCredentials = hmsTenantCredentials($tenant);
 
-$conn = new mysqli(
-    $tenantCredentials['host'],
-    $tenantCredentials['user'],
-    $tenantCredentials['pass'],
-    $tenantCredentials['db']
-);
+$conn = hmsConnectMysqli($tenantCredentials);
 
 if ($conn->connect_error) {
     error_log('ABDM DISCOVERY | Tenant DB connection failed.');
@@ -286,12 +282,7 @@ if (empty($authDecision['allow'])) {
 // ─────────────────────────────────────────────────────────
 // Reuses the already-resolved $tenantCredentials so the reconnect cannot fall
 // back to the raw stored project-row credentials.
-$conn = new mysqli(
-    $tenantCredentials['host'],
-    $tenantCredentials['user'],
-    $tenantCredentials['pass'],
-    $tenantCredentials['db']
-);
+$conn = hmsConnectMysqli($tenantCredentials);
 
 if ($conn->connect_error) {
     error_log('ABDM DISCOVERY | Tenant DB reconnect failed.');

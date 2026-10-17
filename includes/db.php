@@ -30,6 +30,7 @@ $stmt = $controlConn->prepare("
         tenant_id,
         hospital_id,
         database_host,
+        database_port,
         database_name,
         database_user,
         database_password,
@@ -75,12 +76,7 @@ if ($tenant['access_status'] !== 'Allowed') {
 }
 $tenantCredentials = hmsTenantCredentials($tenant);
 $databaseHost = $tenantCredentials['host'];
-$conn = new mysqli(
-    $databaseHost,
-    $tenantCredentials['user'],
-    $tenantCredentials['pass'],
-    $tenantCredentials['db']
-);
+$conn = hmsConnectMysqli($tenantCredentials);
 if ($conn->connect_error) {
     die("Tenant database connection failed.");
 }

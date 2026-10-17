@@ -10,12 +10,13 @@ function connectTenantDatabase(array $tenant): mysqli
     $username = $credentials['user'];
     $password = $credentials['pass'];
 
-    $conn = new mysqli(
-        $host,
-        $username,
-        $password,
-        $database
-    );
+    $conn = hmsConnectMysqli([
+        'host' => $host,
+        'db'   => $database,
+        'user' => $username,
+        'pass' => $password,
+        'port' => $credentials['port'] ?? 3306,
+    ]);
 
     if ($conn->connect_error) {
         throw new RuntimeException(
