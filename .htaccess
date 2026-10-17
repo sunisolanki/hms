@@ -34,7 +34,7 @@ RewriteEngine On
 # Exactly one file of each name exists in the tree (verified), so these
 # rules cannot shadow an unrelated application file.
 # ------------------------------------------------------------------
-<FilesMatch "^(abdm_callback_debug\.txt|abdm_token_cache\.json|installation\.txt|control_db\.php|db_credentials\.php)$">
+<FilesMatch "^(abdm_callback_debug\.txt|abdm_token_cache\.json|installation\.txt|control_db\.php|db_credentials\.php|https\.php)$">
     <IfModule mod_authz_core.c>
         Require all denied
     </IfModule>

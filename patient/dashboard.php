@@ -6,10 +6,7 @@ error_reporting(E_ALL);
 ini_set('session.cookie_httponly', '1');
 ini_set('session.cookie_secure', '1');
 ini_set('session.use_strict_mode', '1');
-if (empty($_SERVER['HTTPS'])) {
-    header('Location: https://' . $_SERVER['HTTP_HOST'] . $_SERVER['REQUEST_URI']);
-    exit;
-}
+require_once __DIR__ . '/../includes/https.php';
 session_set_cookie_params([
     'lifetime' => 0,
     'path' => '/',
